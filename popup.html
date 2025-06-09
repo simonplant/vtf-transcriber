@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>VTF Transcriber Settings</title>
+  <style>
+    body { font-family: sans-serif; width: 300px; padding: 10px; }
+    h3 { margin-top: 0; }
+    label, input { display: block; width: 100%; margin-bottom: 5px; }
+    input { box-sizing: border-box; }
+    button { float: right; }
+    #status { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h3>VTF Transcriber Settings</h3>
+  <label for="apiKey">OpenAI API Key:</label>
+  <input type="password" id="apiKey" placeholder="Enter your API key">
+  <button id="saveKey">Save</button>
+  <p id="status"></p>
+  <script src="popup.js"></script>
+</body>
+</html>
