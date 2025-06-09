@@ -8,35 +8,58 @@ import { TranscriptionUI } from './transcription-ui.js';
 
 class VTFAudioExtension {
     constructor() {
+      this.ui = new TranscriptionUI();
       this.globalsFinder = new VTFGlobalsFinder();
       this.audioCapture = new VTFAudioCapture();
       this.streamMonitor = new VTFStreamMonitor();
-      this.ui = new TranscriptionUI();
     }
     
     async init() {
       try {
+        // This is the unconditional entry point, running after programmatic injection.
         console.log('[VTF Extension] Initializing...');
         
-        const globalsFound = await this.globalsFinder.waitForGlobals(60, 500);
-        if (!globalsFound) {
-          // Throw an error that will be caught and displayed
-          throw new Error('Failed to find VTF global objects. Is this the correct page?');
-        }
-        
-        await this.audioCapture.initialize();
+        // --- BEST PRACTICE SEQUENCE ---
+
+        // STEP 1 & 2: Initialize core systems that Observe and Scan immediately.
+        // This part is lean and has no external dependencies on page state.
+        await this.audioCapture.initialize(); // Prepares the AudioContext
         if (!this.audioCapture.workletReady) {
-          throw new Error('AudioWorklet could not be initialized. Browser might be outdated.');
+          throw new Error('AudioWorklet could not be initialized.');
         }
         
-        this.setupDOMObserver();
+        this.setupDOMObserver(); // STEP 1: Starts *observing* for future elements.
+        this.scanExistingElements(); // STEP 2: *Scans* for current elements.
+        
         this.setupMessageHandlers();
         
-        console.log('[VTF Extension] Initialization complete');
+        console.log('[VTF Extension] Core capture system is LIVE.');
+        
+        // STEP 3: Decouple non-essential enhancements.
+        // This runs in parallel and does not block the core logic above.
+        this.findGlobalsForEnhancements();
+
       } catch (error) {
         console.error('[VTF Extension] CRITICAL ERROR:', error);
-        // Display the error in our UI
         this.ui.showError(error.message);
+      }
+    }
+    
+    scanExistingElements() {
+      const elements = document.querySelectorAll('audio[id^="msRemAudio-"]');
+      console.log(`[VTF Extension] Found ${elements.length} existing audio element(s) on scan.`);
+      elements.forEach(element => this.handleNewAudioElement(element));
+    }
+    
+    async findGlobalsForEnhancements() {
+      const globalsFound = await this.globalsFinder.waitForGlobals(60, 500);
+      if (globalsFound) {
+        console.log('[VTF Extension] VTF globals found. Enhanced features (volume sync, etc.) are now enabled.');
+        // Here you would initialize any features that DEPEND on globals,
+        // like the VTFStateMonitor.
+        // this.stateMonitor.startSync(this.globalsFinder, 1000);
+      } else {
+        console.warn('[VTF Extension] VTF globals not found. Running in core capture mode only.');
       }
     }
     
