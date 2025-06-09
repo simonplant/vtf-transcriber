@@ -6,43 +6,98 @@ import { VTFStreamMonitor } from './vtf-stream-monitor.js';
 import { VTFAudioCapture } from './vtf-audio-capture.js';
 import { TranscriptionUI } from './transcription-ui.js';
 
-class VTFAudioExtension {
+// Guard against double injection
+if (window.vtfExtensionInitialized) {
+  console.log('[VTF Extension] Already initialized, skipping.');
+} else {
+  window.vtfExtensionInitialized = true;
+
+  class VTFAudioExtension {
     constructor() {
-      this.ui = new TranscriptionUI();
-      this.globalsFinder = new VTFGlobalsFinder();
       this.audioCapture = new VTFAudioCapture();
+      this.transcriptionUI = new TranscriptionUI();
       this.streamMonitor = new VTFStreamMonitor();
+      this.globalsFinder = new VTFGlobalsFinder();
+      this.recoveryAttempts = 0;
+      this.maxRecoveryAttempts = 3;
+      this.heartbeatInterval = null;
+      this.isInitialized = false;
     }
     
     async init() {
-      try {
-        // This is the unconditional entry point, running after programmatic injection.
-        console.log('[VTF Extension] Initializing...');
-        
-        // --- BEST PRACTICE SEQUENCE ---
+      if (this.isInitialized) {
+        console.log('[Content] Extension already initialized');
+        return;
+      }
 
-        // STEP 1 & 2: Initialize core systems that Observe and Scan immediately.
-        // This part is lean and has no external dependencies on page state.
-        await this.audioCapture.initialize(); // Prepares the AudioContext
-        if (!this.audioCapture.workletReady) {
-          throw new Error('AudioWorklet could not be initialized.');
-        }
-        
-        this.setupDOMObserver(); // STEP 1: Starts *observing* for future elements.
-        this.scanExistingElements(); // STEP 2: *Scans* for current elements.
+      try {
+        await this.globalsFinder.initialize();
+        await this.streamMonitor.initialize(this.globalsFinder);
+        await this.audioCapture.initialize();
+        await this.transcriptionUI.initialize();
         
         this.setupMessageHandlers();
+        this.startHeartbeat();
+        this.startResourceMonitoring();
         
-        console.log('[VTF Extension] Core capture system is LIVE.');
+        this.isInitialized = true;
+        this.recoveryAttempts = 0;
         
-        // STEP 3: Decouple non-essential enhancements.
-        // This runs in parallel and does not block the core logic above.
-        this.findGlobalsForEnhancements();
-
+        console.log('[Content] Extension initialized successfully');
       } catch (error) {
-        console.error('[VTF Extension] CRITICAL ERROR:', error);
-        this.ui.showError(error.message);
+        console.error('[Content] Initialization error:', error);
+        this.attemptRecovery();
       }
+    }
+    
+    async attemptRecovery() {
+      if (this.recoveryAttempts >= this.maxRecoveryAttempts) {
+        console.error('[VTF Extension] Max recovery attempts reached. Please reload the page.');
+        this.transcriptionUI.showError('Failed to initialize. Please reload the page.');
+        return;
+      }
+
+      this.recoveryAttempts++;
+      console.log(`[VTF Extension] Attempting recovery (${this.recoveryAttempts}/${this.maxRecoveryAttempts})...`);
+      
+      try {
+        // Reset state
+        this.audioCapture.stopAll();
+        this.streamMonitor.reset();
+        
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Retry initialization
+        await this.init();
+      } catch (error) {
+        console.error('[VTF Extension] Recovery failed:', error);
+        await this.attemptRecovery();
+      }
+    }
+
+    startResourceMonitoring() {
+      setInterval(() => {
+        const activeStreams = this.streamMonitor.getActiveStreams();
+        const activeCaptures = this.audioCapture.getActiveCaptures();
+        
+        console.log(`[VTF Extension] Resource Status:
+          Active Streams: ${activeStreams}
+          Active Captures: ${activeCaptures}
+        `);
+
+        // Check for resource leaks
+        if (activeStreams !== activeCaptures) {
+          console.warn('[VTF Extension] Resource mismatch detected');
+          this.cleanupResources();
+        }
+      }, 30000); // Check every 30 seconds
+    }
+
+    cleanupResources() {
+      console.log('[VTF Extension] Cleaning up resources...');
+      this.audioCapture.stopAll();
+      this.streamMonitor.reset();
     }
     
     scanExistingElements() {
@@ -64,7 +119,7 @@ class VTFAudioExtension {
     }
     
     setupDOMObserver() {
-      const observer = new MutationObserver((mutations) => {
+      this.observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
           mutation.addedNodes.forEach((node) => {
             if (this.isVTFAudioElement(node)) {
@@ -74,7 +129,7 @@ class VTFAudioExtension {
         });
       });
       const target = document.getElementById('topRoomDiv') || document.body;
-      observer.observe(target, { childList: true, subtree: false });
+      this.observer.observe(target, { childList: true, subtree: false });
     }
     
     isVTFAudioElement(node) {
@@ -100,19 +155,104 @@ class VTFAudioExtension {
 
     setupMessageHandlers() {
       chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.type === 'transcription') {
-          const { speaker, text } = request.data;
-          this.ui.addTranscription(speaker, text);
-        } else if (request.type === 'transcription-error') {
-          this.ui.showError(request.data.message);
-        }
+        this.handleMessage(request, sender)
+          .then(sendResponse)
+          .catch(error => {
+            console.error('[Content] Message handling error:', error);
+            sendResponse({ error: error.message });
+          });
+        return true;
       });
+    }
+
+    async handleMessage(request, sender) {
+      switch (request.type) {
+        case 'startCapture':
+          await this.startCapture();
+          return { started: true };
+
+        case 'stopCapture':
+          await this.stopCapture();
+          return { stopped: true };
+
+        case 'getStatus':
+          return {
+            isInitialized: this.isInitialized,
+            streamCount: this.audioCapture.getActiveCaptures(),
+            hasUI: this.transcriptionUI.isVisible()
+          };
+
+        default:
+          throw new Error('Unknown message type');
+      }
+    }
+
+    async startCapture() {
+      if (!this.isInitialized) {
+        await this.init();
+      }
+
+      const streams = await this.streamMonitor.getActiveStreams();
+      for (const stream of streams) {
+        await this.audioCapture.captureStream(stream.stream, stream.userId);
+      }
+
+      this.transcriptionUI.show();
+    }
+
+    async stopCapture() {
+      await this.audioCapture.stopAll();
+      this.transcriptionUI.hide();
+    }
+
+    startHeartbeat() {
+      if (this.heartbeatInterval) {
+        clearInterval(this.heartbeatInterval);
+      }
+
+      this.heartbeatInterval = setInterval(() => {
+        const streamCount = this.audioCapture.getActiveCaptures();
+        chrome.runtime.sendMessage({
+          type: 'heartbeat',
+          data: { streamCount }
+        }).catch(error => {
+          console.error('[Content] Heartbeat error:', error);
+          // If we can't send heartbeat, try to recover
+          this.attemptRecovery();
+        });
+      }, 5000); // Send heartbeat every 5 seconds
+    }
+
+    async shutdown() {
+      if (this.heartbeatInterval) {
+        clearInterval(this.heartbeatInterval);
+        this.heartbeatInterval = null;
+      }
+
+      try {
+        await this.audioCapture.stopAll();
+        this.transcriptionUI.remove();
+        this.isInitialized = false;
+        console.log('[Content] Extension shutdown complete');
+      } catch (error) {
+        console.error('[Content] Shutdown error:', error);
+        throw error;
+      }
     }
   }
   
   // Ensure the script runs after the DOM is loaded
   if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => new VTFAudioExtension().init());
+    document.addEventListener('DOMContentLoaded', () => {
+      const extension = new VTFAudioExtension();
+      extension.init().catch(error => {
+        console.error('[Content] Failed to initialize extension:', error);
+      });
+    });
   } else {
-      new VTFAudioExtension().init();
+    const extension = new VTFAudioExtension();
+    extension.init().catch(error => {
+      console.error('[Content] Failed to initialize extension:', error);
+    });
   }
+}

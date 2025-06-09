@@ -3,6 +3,7 @@
     "name": "VTF Audio Transcriber",
     "version": "1.0.0",
     "description": "Captures and transcribes audio from the VTF platform using a direct stream integration.",
+    "options_page": "options.html",
     "permissions": [
       "storage",
       "activeTab",

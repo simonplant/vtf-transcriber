@@ -1,16 +1,18 @@
 {
   "name": "vtf-transcriber",
   "version": "1.0.0",
-  "description": "",
+  "description": "Chrome extension for transcribing VTF audio streams",
   "main": "audio-worklet.js",
   "scripts": {
+    "build": "webpack --config webpack.config.js",
+    "watch": "webpack --config webpack.config.js --watch",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/simonplant/vtf-transcriber.git"
   },
-  "keywords": [],
+  "keywords": ["chrome-extension", "audio", "transcription", "vtf"],
   "author": "",
   "license": "ISC",
   "bugs": {
@@ -19,6 +21,9 @@
   "homepage": "https://github.com/simonplant/vtf-transcriber#readme",
   "devDependencies": {
     "webpack": "^5.99.9",
-    "webpack-cli": "^6.0.1"
+    "webpack-cli": "^6.0.1",
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "babel-loader": "^9.1.3"
   }
 }
