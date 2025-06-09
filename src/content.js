@@ -15,17 +15,29 @@ class VTFAudioExtension {
     }
     
     async init() {
-      console.log('[VTF Extension] Initializing...');
-      const globalsFound = await this.globalsFinder.waitForGlobals(60, 500);
-      if (!globalsFound) {
-        console.error('[VTF Extension] Failed to find VTF globals');
-        return;
+      try {
+        console.log('[VTF Extension] Initializing...');
+        
+        const globalsFound = await this.globalsFinder.waitForGlobals(60, 500);
+        if (!globalsFound) {
+          // Throw an error that will be caught and displayed
+          throw new Error('Failed to find VTF global objects. Is this the correct page?');
+        }
+        
+        await this.audioCapture.initialize();
+        if (!this.audioCapture.workletReady) {
+          throw new Error('AudioWorklet could not be initialized. Browser might be outdated.');
+        }
+        
+        this.setupDOMObserver();
+        this.setupMessageHandlers();
+        
+        console.log('[VTF Extension] Initialization complete');
+      } catch (error) {
+        console.error('[VTF Extension] CRITICAL ERROR:', error);
+        // Display the error in our UI
+        this.ui.showError(error.message);
       }
-      
-      await this.audioCapture.initialize();
-      this.setupDOMObserver();
-      this.setupMessageHandlers();
-      console.log('[VTF Extension] Initialization complete');
     }
     
     setupDOMObserver() {
