@@ -98,3 +98,4 @@ web_modules/
 .yarn/install-state.gz
 .pnp.*
 .DS_Store
+.DS_Store

@@ -21,6 +21,7 @@ debugLog('DOM elements found successfully');
 // Send a message to the background script to start the capture.
 // The background script will know which tab this came from via the `sender` object.
 startButton.addEventListener('click', async () => {
+  // The sender object will identify the tab
   await chrome.runtime.sendMessage({ type: 'start-capture' });
   window.close();
 });
@@ -33,18 +34,21 @@ stopButton.addEventListener('click', async () => {
 // When the popup opens, ask the background script for the current status.
 document.addEventListener('DOMContentLoaded', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) return;
+
   try {
-    // The background script compares this tab's ID to the activeTabId
     const response = await chrome.runtime.sendMessage({ type: 'get-status' });
     if (response?.isActive) {
-      statusElement.textContent = `Status: Recording`;
+      statusElement.textContent = `Status: Recording on this tab.`;
       startButton.style.display = 'none';
       stopButton.style.display = 'block';
     } else {
-      statusElement.textContent = `Status: Inactive`;
+      statusElement.textContent = `Status: Ready to record.`;
     }
   } catch (e) {
-    statusElement.textContent = 'Status: Ready to start.';
+    // This can happen if the background script is not ready
+    console.warn("Could not get status from background script:", e);
+    statusElement.textContent = 'Status: Initializing...';
   }
 });
 

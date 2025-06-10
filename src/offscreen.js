@@ -20,22 +20,24 @@ debugLog('Offscreen document initializing...');
 chrome.runtime.onMessage.addListener(handleMessages);
 
 async function handleMessages(message) {
-    debugLog('Received message in offscreen:', message);
-    if (message.type === 'start-recording') {
-        await startRecording(message.streamId);
-    } else if (message.type === 'stop-recording') {
-        stopRecording();
+    // No target check needed here; background script is the only sender.
+    switch (message.type) {
+        case 'start-recording':
+            await startRecording(message.streamId);
+            break;
+        case 'stop-recording':
+            stopRecording();
+            break;
     }
 }
 
 async function startRecording(streamId) {
     if (mediaRecorder?.state === 'recording') {
-        debugLog('Recording is already in progress');
+        console.warn('Recording is already in progress.');
         return;
     }
 
     try {
-        debugLog('Getting media stream with ID:', streamId);
         const media = await navigator.mediaDevices.getUserMedia({
             audio: {
                 mandatory: {
@@ -47,53 +49,47 @@ async function startRecording(streamId) {
         });
 
         recordingStream = media;
-        debugLog('Media stream obtained successfully');
-
         const options = { mimeType: 'audio/webm;codecs=opus' };
         mediaRecorder = new MediaRecorder(recordingStream, options);
-        debugLog('MediaRecorder created with options:', options);
 
         mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
-                debugLog('Audio chunk available, size:', event.data.size);
-                // Send the audio blob back to the service worker for transcription
+                // Send the audio blob back to the service worker.
                 chrome.runtime.sendMessage({
                     type: 'audio-blob',
-                    target: 'service-worker',
                     data: { blob: event.data }
                 });
             }
         };
 
         mediaRecorder.onstop = () => {
-            debugLog('MediaRecorder stopped, cleaning up');
+            console.log("MediaRecorder stopped, cleaning up.");
             cleanup();
         };
-
-        // Create a chunk every 5 seconds for faster transcription turnaround
-        mediaRecorder.start(5000);
-        debugLog('MediaRecorder started, creating chunks every 5 seconds');
+        
+        // Create a chunk every 5 seconds.
+        mediaRecorder.start(5000); 
+        console.log('Offscreen recording started.');
 
     } catch (error) {
-        debugLog('Error starting offscreen recording:', error);
+        console.error('Error starting offscreen recording:', error);
     }
 }
 
 function stopRecording() {
-    debugLog('Stopping recording');
     if (mediaRecorder?.state === 'recording') {
         mediaRecorder.stop();
     }
-    cleanup();
+    // The 'onstop' event listener will handle cleanup.
 }
 
 function cleanup() {
-    debugLog('Cleaning up media resources');
     if (recordingStream) {
         recordingStream.getTracks().forEach(track => track.stop());
         recordingStream = null;
     }
     mediaRecorder = null;
+    console.log('Offscreen resources cleaned up.');
 }
 
 // Log successful initialization

@@ -14,28 +14,25 @@ function debugLog(...args) {
 }
 
 const apiKeyInput = document.getElementById('apiKey');
-const debugModeCheckbox = document.getElementById('debugMode');
 const saveButton = document.getElementById('save');
 const statusElement = document.getElementById('status');
 
 async function loadOptions() {
-    // CORRECTED: Reads from `local` storage for both settings.
-    const data = await chrome.storage.local.get(['apiKey', 'debugMode']);
-    if (data.apiKey) apiKeyInput.placeholder = "API Key is set. Enter to change.";
-    debugModeCheckbox.checked = !!data.debugMode;
+    const data = await chrome.storage.local.get('apiKey');
+    if (data.apiKey) {
+        apiKeyInput.placeholder = "API Key is set. Enter a new key to change it.";
+    }
 }
 
 async function saveOptions() {
-    const settings = { debugMode: debugModeCheckbox.checked };
-    if (apiKeyInput.value) settings.apiKey = apiKeyInput.value;
-    
-    // CORRECTED: Saves to `local` storage.
-    await chrome.storage.local.set(settings);
-    
-    statusElement.textContent = 'Options saved!';
+    // Only save if the input has a value.
     if (apiKeyInput.value) {
-        apiKeyInput.value = '';
-        apiKeyInput.placeholder = "API Key is set.";
+        await chrome.storage.local.set({ apiKey: apiKeyInput.value });
+        statusElement.textContent = 'API Key saved successfully!';
+        apiKeyInput.value = ''; // Clear the input after saving
+        apiKeyInput.placeholder = "API Key is set. Enter a new key to change it.";
+    } else {
+        statusElement.textContent = 'Please enter an API key to save.';
     }
     setTimeout(() => { statusElement.textContent = ''; }, 3000);
 }
