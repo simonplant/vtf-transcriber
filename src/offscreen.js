@@ -49,7 +49,13 @@ async function startRecording(streamId) {
         });
 
         recordingStream = media;
-        const options = { mimeType: 'audio/webm;codecs=opus' };
+        
+        // Configure MediaRecorder with optimal settings for Whisper API
+        const options = {
+            mimeType: 'audio/webm;codecs=opus',
+            audioBitsPerSecond: 128000 // 128kbps for good quality
+        };
+        
         mediaRecorder = new MediaRecorder(recordingStream, options);
 
         mediaRecorder.ondataavailable = (event) => {
@@ -57,7 +63,10 @@ async function startRecording(streamId) {
                 // Send the audio blob back to the service worker.
                 chrome.runtime.sendMessage({
                     type: 'audio-blob',
-                    data: { blob: event.data }
+                    data: { 
+                        blob: event.data,
+                        timestamp: new Date().toISOString()
+                    }
                 });
             }
         };
@@ -67,9 +76,9 @@ async function startRecording(streamId) {
             cleanup();
         };
         
-        // Create a chunk every 5 seconds.
-        mediaRecorder.start(5000); 
-        console.log('Offscreen recording started.');
+        // Create a chunk every 10 seconds for better transcription
+        mediaRecorder.start(10000); 
+        console.log('Offscreen recording started with optimized settings.');
 
     } catch (error) {
         console.error('Error starting offscreen recording:', error);

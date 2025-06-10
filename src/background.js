@@ -12,6 +12,17 @@ function debugLog(message, data = null) {
   const timestamp = new Date().toISOString();
   const logMessage = `[VTF ${timestamp}] ${message}`;
   console.log(logMessage, data || '');
+  
+  // Forward log to content script if we have an active tab
+  if (activeTabId) {
+    chrome.tabs.sendMessage(activeTabId, {
+      type: 'log',
+      message: logMessage,
+      data: data
+    }).catch(() => {
+      // Ignore errors if content script isn't ready
+    });
+  }
 }
 
 // Initialize state
@@ -72,30 +83,49 @@ async function transcribeAudio(audioBlob) {
     debugLog('Preparing audio data for transcription');
     const formData = new FormData();
     
-    // Ensure we have a proper Blob
+    // Ensure we have a proper Blob with the correct MIME type
     if (!(audioBlob instanceof Blob)) {
       debugLog('Converting audio data to Blob');
-      audioBlob = new Blob([audioBlob], { type: 'audio/webm' });
+      audioBlob = new Blob([audioBlob], { type: 'audio/webm;codecs=opus' });
+    } else if (audioBlob.type !== 'audio/webm;codecs=opus') {
+      debugLog('Converting audio blob to correct MIME type');
+      audioBlob = new Blob([audioBlob], { type: 'audio/webm;codecs=opus' });
+    }
+
+    // Check file size (Whisper API limit is 25MB)
+    if (audioBlob.size > 25 * 1024 * 1024) {
+      throw new Error('Audio file too large. Maximum size is 25MB.');
     }
     
+    // Use .webm extension to match the MIME type
     formData.append('file', audioBlob, 'audio.webm');
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
+    formData.append('response_format', 'json');
 
-    debugLog('Sending audio to OpenAI API...');
+    debugLog('Sending audio to OpenAI API...', { 
+      size: `${(audioBlob.size / 1024 / 1024).toFixed(2)}MB`,
+      type: audioBlob.type
+    });
+
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}` },
       body: formData
     });
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.error?.message || `API Error: ${response.status}`);
     }
+
     const result = await response.json();
     debugLog('Transcription received:', { text: result.text?.trim() });
+    
     if (result.text && result.text.trim()) {
       showNotification('Transcription Received', result.text.trim());
+    } else {
+      throw new Error('No transcription text received');
     }
   } catch (error) {
     debugLog('Transcription failed:', error);
