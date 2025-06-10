@@ -11,80 +11,97 @@ const log = (...args) => {
   }
 };
 
-let mediaRecorder;
+let recorder;
+const RECORDING_INTERVAL_MS = 10000; // 10 seconds
 
 // --- Message Handling ---
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener(handleMessages);
+
+async function handleMessages(message) {
+  // Can't use log() here until we know the debug state from the message.
   if (message.target !== 'offscreen') {
-    return false;
+    return;
   }
-  
+
+  isDebugMode = message.debugMode || false;
   log('Received message:', message.type);
 
   switch (message.type) {
     case 'start-recording':
-      isDebugMode = message.debugMode || false; // Set debug mode from message
-      log('Received start-recording command. Debug mode is:', isDebugMode);
-      startRecording(message.stream)
-        .then(() => sendResponse({ success: true }))
-        .catch(err => sendResponse({ success: false, error: err.message }));
+      await startRecording(message.tabId);
       break;
     case 'stop-recording':
       stopRecording();
-      sendResponse({ success: true });
       break;
     default:
-      log('Unknown message type received.');
-      return false;
+      log('Unknown message type received:', message.type);
   }
-  
-  return true; // Indicates an async response
-});
+}
 
 // --- Core Recording Logic ---
 
-async function startRecording(stream) {
-  if (mediaRecorder?.state === 'recording') {
-    throw new Error('Recording is already in progress.');
+async function startRecording(tabId) {
+  if (recorder?.state === 'recording') {
+    log('Recording is already in progress.');
+    return;
   }
 
-  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  log('Starting recording for tab:', tabId);
+  try {
+    const stream = await chrome.tabCapture.capture({
+      audio: true,
+      video: false,
+      targetTabId: tabId
+    });
 
-  mediaRecorder.ondataavailable = (event) => {
-    if (event.data.size > 0) {
-      log('Audio chunk available, sending to background.');
-      chrome.runtime.sendMessage({ type: 'audio-blob', data: { blob: event.data } });
-    }
-  };
+    // Get the audio track from the stream to ensure we're not holding onto the video track
+    const audioStream = new MediaStream([stream.getAudioTracks()[0]]);
 
-  mediaRecorder.onerror = (event) => {
-    log('MediaRecorder error:', event.error.message);
-    chrome.runtime.sendMessage({ type: 'recording-error', error: event.error.message });
-  };
-  
-  mediaRecorder.onstop = () => {
-    log('MediaRecorder stopped. Cleaning up stream.');
-    try {
-      stream.getTracks().forEach(track => track.stop());
-    } catch(e) {
-      log('Error stopping tracks:', e.message);
-    }
-    mediaRecorder = null;
-  };
-  
-  // Chunk audio every 10 seconds
-  mediaRecorder.start(10000);
-  log('Recording started.');
+    recorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+    recorder.ondataavailable = onDataAvailable;
+    recorder.onstop = () => onStop(audioStream); // Pass stream to onStop for cleanup
+    recorder.onerror = onError;
+    recorder.start(RECORDING_INTERVAL_MS);
+    log('Recorder started.');
+  } catch(e) {
+    log("Error starting recording:", e.message);
+    // Send an error message back to the background script to update the state
+    chrome.runtime.sendMessage({ type: 'recording-error', error: e.message });
+  }
 }
 
 function stopRecording() {
-  if (mediaRecorder?.state === 'recording') {
-    log('Stopping recording.');
-    mediaRecorder.stop();
-  } else {
-    log('No active recording to stop.');
+  if (recorder?.state === 'recording') {
+    recorder.stop(); // This will trigger the onstop event
+    log('Recorder stop requested.');
   }
+}
+
+// --- MediaRecorder Event Handlers ---
+
+function onDataAvailable(event) {
+  if (event.data.size > 0) {
+    log('Audio data received, sending to background script.');
+    const blob = new Blob([event.data], { type: 'audio/webm' });
+    chrome.runtime.sendMessage({ type: 'audio-blob', data: { blob } });
+  }
+}
+
+function onError(event) {
+  log('MediaRecorder error:', event.error.message);
+  chrome.runtime.sendMessage({ type: 'recording-error', error: event.error.message });
+}
+
+function onStop(stream) {
+  log('Recorder stopped. Cleaning up stream.');
+  try {
+    stream.getTracks().forEach(track => track.stop());
+  } catch(e) {
+    log('Error stopping tracks:', e.message);
+  }
+  recorder = null;
+  // The offscreen document is closed by the background script.
 }
 
 log('Offscreen document loaded. Logging will be enabled by background script.'); 

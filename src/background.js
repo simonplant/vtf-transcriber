@@ -14,6 +14,7 @@ let state = {
   debugMode: false, // Default debug mode to false
   captureState: 'inactive', // 'inactive', 'active', 'error'
   transcriptionState: 'inactive', // 'inactive', 'transcribing', 'error'
+  transcriptionLog: [], // Holds the history of transcriptions for the current session
   activeTabId: null,
   stats: {
     totalDuration: 0,
@@ -69,22 +70,23 @@ async function startCapture(tabId) {
   }
 
   try {
-    // 1. Setup and create the offscreen document
+    // 1. Setup and create the offscreen document, passing the target tabId
     await setupOffscreenDocument('offscreen.html');
     
-    // 2. Get a media stream from the tab
-    const stream = await chrome.tabCapture.capture({ audio: true, video: false });
-
-    // 3. Send the stream to the offscreen document to start recording
+    // 2. Send a message to the offscreen document to start recording
     await chrome.runtime.sendMessage({
       type: 'start-recording',
       target: 'offscreen',
-      stream: stream,
-      debugMode: state.debugMode // Pass the current debug mode
+      tabId: tabId, // Pass the tabId to the offscreen document
+      debugMode: state.debugMode
     });
 
-    // 4. Update our state
-    await setState({ captureState: 'active', activeTabId: tabId });
+    // 3. Update our state, clearing the log for the new session
+    await setState({ 
+      captureState: 'active', 
+      activeTabId: tabId,
+      transcriptionLog: [] // Clear log on new capture
+    });
     updateIcon();
     log('Capture started successfully for tab:', tabId);
 
@@ -146,11 +148,15 @@ async function transcribeAudio(audioBlob) {
 
     const result = await response.json();
     log('Transcription received:', result.text);
+    const newTranscription = result.text?.trim();
 
-    if (result.text && result.text.trim()) {
-      showNotification('Transcription Received', result.text.trim());
+    if (newTranscription) {
+      showNotification('Transcription Received', newTranscription);
+      // Add the new transcription to the log
+      const newLog = [...state.transcriptionLog, newTranscription];
       await setState({
         transcriptionState: 'inactive',
+        transcriptionLog: newLog,
         stats: {
           ...state.stats,
           totalTranscriptions: state.stats.totalTranscriptions + 1,
@@ -158,7 +164,9 @@ async function transcribeAudio(audioBlob) {
         }
       });
     } else {
-      throw new Error('No transcription text received from API.');
+      // Don't treat empty transcriptions as an error, just ignore them.
+      log('Received empty transcription from API.');
+      await setState({ transcriptionState: 'inactive' });
     }
   } catch (error) {
     log('Transcription failed:', error.message);
@@ -180,7 +188,7 @@ async function setupOffscreenDocument(path) {
   }
   await chrome.offscreen.createDocument({
     url: path,
-    reasons: ['AUDIO_CAPTURE'],
+    reasons: ['USER_MEDIA'],
     justification: 'To record tab audio for transcription.'
   });
   log('Offscreen document created.');

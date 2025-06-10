@@ -1,6 +1,6 @@
 // ===================================================================================
 //
-// VTF Audio Transcriber - Popup UI Logic
+// VTF Audio Transcriber - Popup UI Logic (Hybrid View - Corrected)
 //
 // ===================================================================================
 
@@ -12,12 +12,19 @@ const log = (...args) => {
 };
 
 // --- DOM Elements ---
+// This now correctly references ALL elements from popup.html
 const UIElements = {
   startBtn: document.getElementById('startCaptureBtn'),
   stopBtn: document.getElementById('stopCaptureBtn'),
+  
   statusIndicator: document.getElementById('statusIndicator'),
   statusText: document.getElementById('statusText'),
-  transcriptionStatus: document.getElementById('transcriptionStatusText'),
+  
+  transcriptionStatusIndicator: document.getElementById('transcriptionStatusIndicator'), // <-- FIX: Added missing element
+  transcriptionStatusText: document.getElementById('transcriptionStatusText'),
+
+  transcriptionLog: document.getElementById('transcriptionLog'),
+  
   totalDuration: document.getElementById('totalDuration'),
   totalTranscriptions: document.getElementById('totalTranscriptions'),
   errorCount: document.getElementById('errorCount')
@@ -25,43 +32,68 @@ const UIElements = {
 
 // --- Rendering Logic ---
 
-// A single function to update the entire UI based on the current state.
 function render(state) {
+  if (!state) {
+    log('Render aborted: state is null or undefined');
+    return;
+  }
   isDebugMode = state.debugMode || false;
   log('Rendering UI with new state:', state);
 
-  // Capture State
-  const isInactive = state.captureState === 'inactive';
-  const isActive = state.captureState === 'active';
-  const isError = state.captureState === 'error';
+  // 1. Header Buttons
+  const isCapturing = state.captureState === 'active';
+  UIElements.startBtn.disabled = isCapturing;
+  UIElements.stopBtn.disabled = !isCapturing;
 
-  // The user should be able to start a capture if the state is inactive OR if there was an error.
-  UIElements.startBtn.disabled = !(isInactive || isError);
-  UIElements.stopBtn.disabled = !isActive;
+  // 2. Status Bar
+  // Capture Status
+  UIElements.statusIndicator.className = 'status-indicator';
+  if (state.captureState === 'active') UIElements.statusIndicator.classList.add('active');
+  if (state.captureState === 'error') UIElements.statusIndicator.classList.add('error');
+  UIElements.statusText.textContent = state.captureState.charAt(0).toUpperCase() + state.captureState.slice(1);
 
-  UIElements.statusIndicator.className = 'status-indicator'; // Reset
-  if (isActive) UIElements.statusIndicator.classList.add('active');
-  if (isError) UIElements.statusIndicator.classList.add('error');
+  // Transcription Status
+  UIElements.transcriptionStatusIndicator.className = 'status-indicator'; // <-- FIX: This will now work
+  if (state.transcriptionState === 'transcribing') UIElements.transcriptionStatusIndicator.classList.add('active');
+  if (state.transcriptionState === 'error') UIElements.transcriptionStatusIndicator.classList.add('error');
+  UIElements.transcriptionStatusText.textContent = state.transcriptionState.charAt(0).toUpperCase() + state.transcriptionState.slice(1);
 
-  const captureStatusMap = {
-    inactive: 'Ready to capture',
-    active: 'Capturing...',
-    error: 'Capture Error'
-  };
-  UIElements.statusText.textContent = captureStatusMap[state.captureState] || 'Unknown';
+  // 3. Transcription Log (Chat View)
+  UIElements.transcriptionLog.innerHTML = ''; // Clear old log
+  if (state.transcriptionLog && state.transcriptionLog.length > 0) {
+    // <-- FIX: Changed logic to create styled chat bubbles
+    state.transcriptionLog.forEach(msg => {
+      if(!msg || !msg.speaker || !msg.text) return;
 
-  // Transcription State
-  const transcribingStatusMap = {
-    inactive: 'Idle',
-    transcribing: 'Transcribing...',
-    error: 'Transcription Error'
-  };
-  UIElements.transcriptionStatus.textContent = transcribingStatusMap[state.transcriptionState] || 'Unknown';
+      const messageEl = document.createElement('div');
+      messageEl.className = `chat-message ${msg.speaker.toLowerCase()}`;
+      
+      const speakerEl = document.createElement('span');
+      speakerEl.className = 'speaker';
+      speakerEl.textContent = msg.speaker;
 
-  // Stats
-  UIElements.totalDuration.textContent = formatDuration(state.stats.totalDuration);
-  UIElements.totalTranscriptions.textContent = state.stats.totalTranscriptions;
-  UIElements.errorCount.textContent = state.stats.errorCount;
+      const textEl = document.createElement('span');
+      textEl.className = 'text';
+      textEl.textContent = msg.text;
+      
+      messageEl.appendChild(speakerEl);
+      messageEl.appendChild(textEl);
+      UIElements.transcriptionLog.appendChild(messageEl);
+    });
+  } else {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'chat-message system';
+    placeholder.innerHTML = '<span>Transcription log will appear here...</span>';
+    UIElements.transcriptionLog.appendChild(placeholder);
+  }
+  UIElements.transcriptionLog.scrollTop = UIElements.transcriptionLog.scrollHeight;
+
+  // 4. Footer Stats
+  if (state.stats) {
+    UIElements.totalDuration.textContent = formatDuration(state.stats.totalDuration || 0);
+    UIElements.totalTranscriptions.textContent = state.stats.totalTranscriptions || 0;
+    UIElements.errorCount.textContent = state.stats.errorCount || 0;
+  }
 }
 
 // --- Event Listeners ---
@@ -77,23 +109,26 @@ function setupEventListeners() {
     chrome.runtime.sendMessage({ type: 'stop-capture' });
   };
   
-  // Listen for state updates from the background script
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'stateUpdate') {
       render(message.data);
     }
+    return true;
   });
 }
 
 // --- Initialization ---
 
 async function initializePopup() {
-  // Can't log here yet, as we don't know the debug state.
   setupEventListeners();
-  // Request the current state from the background script to render the initial UI
-  const initialState = await chrome.runtime.sendMessage({ type: 'get-status' });
-  render(initialState);
-  log('Popup initialized and rendered.');
+  try {
+    const initialState = await chrome.runtime.sendMessage({ type: 'get-status' });
+    render(initialState);
+    log('Popup initialized and rendered.');
+  } catch(e) {
+    console.error("Error initializing popup:", e.message);
+    UIElements.transcriptionLog.innerHTML = `<div class="chat-message error"><span>Could not connect to the background service. Reload extension.</span></div>`;
+  }
 }
 
 // --- Helpers ---
