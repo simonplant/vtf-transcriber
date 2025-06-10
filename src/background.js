@@ -11,6 +11,7 @@ const DEBUG = true; // Set to true to enable detailed console logging
 // The single source of truth for the extension's state.
 let state = {
   apiKey: '',
+  debugMode: false, // Default debug mode to false
   captureState: 'inactive', // 'inactive', 'active', 'error'
   transcriptionState: 'inactive', // 'inactive', 'transcribing', 'error'
   activeTabId: null,
@@ -21,9 +22,9 @@ let state = {
   }
 };
 
-// Simple logger that respects the DEBUG flag.
+// Simple logger that respects the debugMode flag in the state.
 const log = (...args) => {
-  if (DEBUG) {
+  if (state.debugMode) {
     console.log('[VTF BG]', ...args);
   }
 };
@@ -78,7 +79,8 @@ async function startCapture(tabId) {
     await chrome.runtime.sendMessage({
       type: 'start-recording',
       target: 'offscreen',
-      stream: stream
+      stream: stream,
+      debugMode: state.debugMode // Pass the current debug mode
     });
 
     // 4. Update our state

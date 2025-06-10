@@ -4,7 +4,12 @@
 //
 // ===================================================================================
 
-const log = (...args) => console.log('[VTF Popup]', ...args);
+let isDebugMode = false;
+const log = (...args) => {
+  if (isDebugMode) {
+    console.log('[VTF Popup]', ...args);
+  }
+};
 
 // --- DOM Elements ---
 const UIElements = {
@@ -22,6 +27,7 @@ const UIElements = {
 
 // A single function to update the entire UI based on the current state.
 function render(state) {
+  isDebugMode = state.debugMode || false;
   log('Rendering UI with new state:', state);
 
   // Capture State
@@ -82,11 +88,12 @@ function setupEventListeners() {
 // --- Initialization ---
 
 async function initializePopup() {
-  log('Initializing popup...');
+  // Can't log here yet, as we don't know the debug state.
   setupEventListeners();
   // Request the current state from the background script to render the initial UI
   const initialState = await chrome.runtime.sendMessage({ type: 'get-status' });
   render(initialState);
+  log('Popup initialized and rendered.');
 }
 
 // --- Helpers ---

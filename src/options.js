@@ -4,7 +4,12 @@
 //
 // ===================================================================================
 
-const log = (...args) => console.log('[VTF Options]', ...args);
+let isDebugMode = false;
+const log = (...args) => {
+  if (isDebugMode) {
+    console.log('[VTF Options]', ...args);
+  }
+};
 
 // --- DOM Elements ---
 const apiKeyInput = document.getElementById('apiKey');
@@ -16,11 +21,11 @@ const statusElement = document.getElementById('status');
 
 // Load settings from storage and display them.
 async function loadOptions() {
-  log('Loading options...');
   try {
     const { appState } = await chrome.storage.local.get('appState');
     if (appState) {
-      log('Found existing state:', appState);
+      isDebugMode = appState.debugMode || false;
+      log('Loading options. Found existing state:', appState);
       if (appState.apiKey) {
         apiKeyInput.placeholder = "API Key is set. Enter a new key to overwrite.";
       } else {
@@ -36,7 +41,6 @@ async function loadOptions() {
 
 // Save the current settings from the UI to storage.
 async function saveOptions() {
-  log('Saving options...');
   try {
     const { appState } = await chrome.storage.local.get('appState');
     const newApiKey = apiKeyInput.value.trim();
@@ -46,6 +50,10 @@ async function saveOptions() {
       ...appState,
       debugMode: debugModeCheckbox.checked
     };
+    
+    // Update our local debug flag immediately for subsequent logs
+    isDebugMode = newState.debugMode;
+    log('Saving new state:', newState);
 
     if (newApiKey) {
       newState.apiKey = newApiKey;

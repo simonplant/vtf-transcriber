@@ -4,7 +4,12 @@
 //
 // ===================================================================================
 
-const log = (...args) => console.log('[VTF Offscreen]', ...args);
+let isDebugMode = false;
+const log = (...args) => {
+  if (isDebugMode) {
+    console.log('[VTF Offscreen]', ...args);
+  }
+};
 
 let mediaRecorder;
 
@@ -19,6 +24,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   switch (message.type) {
     case 'start-recording':
+      isDebugMode = message.debugMode || false; // Set debug mode from message
+      log('Received start-recording command. Debug mode is:', isDebugMode);
       startRecording(message.stream)
         .then(() => sendResponse({ success: true }))
         .catch(err => sendResponse({ success: false, error: err.message }));
@@ -80,4 +87,4 @@ function stopRecording() {
   }
 }
 
-log('Offscreen document loaded and listening for messages.'); 
+log('Offscreen document loaded. Logging will be enabled by background script.'); 
