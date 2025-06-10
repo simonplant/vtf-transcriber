@@ -1,26 +1,3 @@
-// Initialize popup state from storage
-async function initializePopup() {
-  debugLog('Initializing popup state...');
-  try {
-    const result = await chrome.storage.local.get([
-      'captureState',
-      'transcriptionState',
-      'stats',
-      'lastUpdate'
-    ]);
-    
-    return {
-      captureState: result.captureState || 'Inactive',
-      transcriptionState: result.transcriptionState || 'Inactive',
-      stats: result.stats || { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 },
-      lastUpdate: result.lastUpdate || 'Never'
-    };
-  } catch (error) {
-    console.error('Failed to initialize popup state:', error);
-    throw error;
-  }
-}
-
 // Debug logging function
 function debugLog(message, data = null) {
   const logMessage = `[VTF Popup] ${message}`;
@@ -40,59 +17,55 @@ function getElement(id) {
   const element = document.getElementById(id);
   if (!element) {
     debugLog(`Error: Element with id '${id}' not found`);
+    throw new Error(`Required element '${id}' not found`);
   }
   return element;
+}
+
+// Initialize popup state from storage
+async function initializePopup() {
+  debugLog('Initializing popup state...');
+  try {
+    const result = await chrome.storage.local.get([
+      'captureState',
+      'transcriptionState',
+      'stats',
+      'lastUpdate'
+    ]);
+    
+    return {
+      captureState: result.captureState || 'inactive',
+      transcriptionState: result.transcriptionState || 'inactive',
+      stats: result.stats || { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 },
+      lastUpdate: result.lastUpdate || 'Never'
+    };
+  } catch (error) {
+    debugLog('Failed to initialize popup state:', error);
+    throw error;
+  }
 }
 
 // Initialize UI elements
 function initializeUI() {
   debugLog('Initializing UI...');
   
-  // Log all elements in the document
-  const allElements = document.querySelectorAll('*');
-  debugLog('All elements in document:', Array.from(allElements).map(el => ({
-    id: el.id,
-    tagName: el.tagName,
-    className: el.className
-  })));
+  try {
+    // Get UI elements
+    const startCaptureBtn = getElement('startCaptureBtn');
+    const stopCaptureBtn = getElement('stopCaptureBtn');
+    const testConnectionBtn = getElement('testConnectionBtn');
+    const statusIndicator = getElement('statusIndicator');
+    const statusText = getElement('statusText');
+    const captureDuration = getElement('captureDuration');
+    const transcriptionStatusText = getElement('transcriptionStatusText');
+    const statsContainer = getElement('statsContainer');
+    const totalDuration = getElement('totalDuration');
+    const totalTranscriptions = getElement('totalTranscriptions');
+    const errorCount = getElement('errorCount');
+    const lastUpdate = getElement('lastUpdate');
 
-  // Get UI elements
-  const startCaptureBtn = getElement('startCaptureBtn');
-  const stopCaptureBtn = getElement('stopCaptureBtn');
-  const testConnectionBtn = getElement('testConnectionBtn');
-  const statusIndicator = getElement('statusIndicator');
-  const statusText = getElement('statusText');
-  const statsContainer = getElement('statsContainer');
-  const totalDuration = getElement('totalDuration');
-  const totalTranscriptions = getElement('totalTranscriptions');
-  const errorCount = getElement('errorCount');
-  const lastUpdate = getElement('lastUpdate');
-
-  // Verify all elements exist
-  const elements = {
-    startCaptureBtn,
-    stopCaptureBtn,
-    testConnectionBtn,
-    statusIndicator,
-    statusText,
-    statsContainer,
-    totalDuration,
-    totalTranscriptions,
-    errorCount,
-    lastUpdate
-  };
-
-  Object.entries(elements).forEach(([name, element]) => {
-    if (element) {
-      debugLog(`Found element: ${name}`);
-    } else {
-      debugLog(`Missing element: ${name}`);
-    }
-  });
-
-  // Set up event listeners
-  if (startCaptureBtn) {
-    startCaptureBtn.onmousedown = async (e) => {
+    // Set up event listeners
+    startCaptureBtn.onclick = async (e) => {
       e.preventDefault();
       debugLog('Start capture button pressed');
       try {
@@ -109,11 +82,8 @@ function initializeUI() {
         updateUIState('error');
       }
     };
-    debugLog('Start capture button handler attached');
-  }
 
-  if (stopCaptureBtn) {
-    stopCaptureBtn.onmousedown = async (e) => {
+    stopCaptureBtn.onclick = async (e) => {
       e.preventDefault();
       debugLog('Stop capture button pressed');
       try {
@@ -130,11 +100,8 @@ function initializeUI() {
         updateUIState('error');
       }
     };
-    debugLog('Stop capture button handler attached');
-  }
 
-  if (testConnectionBtn) {
-    testConnectionBtn.onmousedown = async (e) => {
+    testConnectionBtn.onclick = async (e) => {
       e.preventDefault();
       debugLog('Test connection button pressed');
       try {
@@ -151,45 +118,52 @@ function initializeUI() {
         showNotification('Connection Test', 'Failed to connect to server');
       }
     };
-    debugLog('Test connection button handler attached');
-  }
 
-  // Initial state check
-  checkCaptureState();
+    // Initial state check
+    checkCaptureState();
+    
+    debugLog('UI initialization complete');
+  } catch (error) {
+    debugLog('Failed to initialize UI:', error);
+    showNotification('Initialization Error', 'Failed to initialize UI. Please reload the extension.');
+  }
 }
 
 // Update UI state
 function updateUIState(state) {
   debugLog('Updating UI state:', state);
-  const statusIndicator = getElement('statusIndicator');
-  const statusText = getElement('statusText');
-  const startCaptureBtn = getElement('startCaptureBtn');
-  const stopCaptureBtn = getElement('stopCaptureBtn');
+  try {
+    const statusIndicator = getElement('statusIndicator');
+    const statusText = getElement('statusText');
+    const startCaptureBtn = getElement('startCaptureBtn');
+    const stopCaptureBtn = getElement('stopCaptureBtn');
+    const transcriptionStatusText = getElement('transcriptionStatusText');
 
-  if (!statusIndicator || !statusText || !startCaptureBtn || !stopCaptureBtn) {
-    debugLog('Error: Required UI elements not found for state update');
-    return;
-  }
-
-  switch (state) {
-    case 'active':
-      statusIndicator.className = 'status-indicator active';
-      statusText.textContent = 'Recording';
-      startCaptureBtn.disabled = true;
-      stopCaptureBtn.disabled = false;
-      break;
-    case 'inactive':
-      statusIndicator.className = 'status-indicator';
-      statusText.textContent = 'Ready';
-      startCaptureBtn.disabled = false;
-      stopCaptureBtn.disabled = true;
-      break;
-    case 'error':
-      statusIndicator.className = 'status-indicator error';
-      statusText.textContent = 'Error';
-      startCaptureBtn.disabled = false;
-      stopCaptureBtn.disabled = true;
-      break;
+    switch (state) {
+      case 'active':
+        statusIndicator.className = 'status-indicator active';
+        statusText.textContent = 'Recording';
+        transcriptionStatusText.textContent = 'Processing';
+        startCaptureBtn.disabled = true;
+        stopCaptureBtn.disabled = false;
+        break;
+      case 'inactive':
+        statusIndicator.className = 'status-indicator';
+        statusText.textContent = 'Ready';
+        transcriptionStatusText.textContent = 'Inactive';
+        startCaptureBtn.disabled = false;
+        stopCaptureBtn.disabled = true;
+        break;
+      case 'error':
+        statusIndicator.className = 'status-indicator error';
+        statusText.textContent = 'Error';
+        transcriptionStatusText.textContent = 'Error';
+        startCaptureBtn.disabled = false;
+        stopCaptureBtn.disabled = true;
+        break;
+    }
+  } catch (error) {
+    debugLog('Error updating UI state:', error);
   }
 }
 
@@ -198,31 +172,66 @@ async function checkCaptureState() {
   debugLog('Checking capture state...');
   try {
     const response = await chrome.runtime.sendMessage({ type: 'get-status' });
+    if (chrome.runtime.lastError) {
+      throw new Error(`Background script error: ${chrome.runtime.lastError.message}`);
+    }
     debugLog('Status check response:', response);
     updateUIState(response.isActive ? 'active' : 'inactive');
+    if (response.offscreenStatus) {
+      updateTranscriptionState(response.offscreenStatus);
+    }
   } catch (error) {
     debugLog('Error checking capture state:', error);
     updateUIState('error');
+    // Provide more specific feedback to the user
+    getElement('statusText').textContent = 'Comms Error';
+    showNotification('Error', 'Cannot connect to the background service. Please try reloading the extension.');
+  }
+}
+
+// Update transcription state
+function updateTranscriptionState(state) {
+  debugLog('Updating transcription state:', state);
+  try {
+    const transcriptionStatusText = getElement('transcriptionStatusText');
+    switch (state) {
+      case 'initialized':
+        transcriptionStatusText.textContent = 'Ready';
+        break;
+      case 'recording':
+        transcriptionStatusText.textContent = 'Processing';
+        break;
+      case 'error':
+        transcriptionStatusText.textContent = 'Error';
+        break;
+      default:
+        transcriptionStatusText.textContent = 'Inactive';
+    }
+  } catch (error) {
+    debugLog('Error updating transcription state:', error);
   }
 }
 
 // Update stats display
 function updateStats(stats) {
   debugLog('Updating stats:', stats);
-  const totalDuration = getElement('totalDuration');
-  const totalTranscriptions = getElement('totalTranscriptions');
-  const errorCount = getElement('errorCount');
-  const lastUpdate = getElement('lastUpdate');
+  try {
+    const totalDuration = getElement('totalDuration');
+    const totalTranscriptions = getElement('totalTranscriptions');
+    const errorCount = getElement('errorCount');
+    const lastUpdate = getElement('lastUpdate');
+    const captureDuration = getElement('captureDuration');
 
-  if (!totalDuration || !totalTranscriptions || !errorCount || !lastUpdate) {
-    debugLog('Error: Required stats elements not found');
-    return;
+    totalDuration.textContent = formatDuration(stats.totalDuration);
+    totalTranscriptions.textContent = stats.totalTranscriptions;
+    errorCount.textContent = stats.errorCount;
+    lastUpdate.textContent = stats.lastUpdate || 'Never';
+    if (stats.currentDuration !== undefined) {
+      captureDuration.textContent = formatDuration(stats.currentDuration);
+    }
+  } catch (error) {
+    debugLog('Error updating stats:', error);
   }
-
-  totalDuration.textContent = formatDuration(stats.totalDuration);
-  totalTranscriptions.textContent = stats.totalTranscriptions;
-  errorCount.textContent = stats.errorCount;
-  lastUpdate.textContent = stats.lastUpdate;
 }
 
 // Format duration in seconds to MM:SS
@@ -237,7 +246,7 @@ function showNotification(title, message) {
   debugLog('Showing notification:', { title, message });
   chrome.notifications.create({
     type: 'basic',
-    iconUrl: 'icon48.png',
+    iconUrl: 'icons/icon48.png',
     title: title,
     message: message
   });
@@ -248,11 +257,26 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'stateUpdate') {
     debugLog('Received state update:', message);
     updateUIState(message.captureState);
+    if (message.transcriptionState) {
+      updateTranscriptionState(message.transcriptionState);
+    }
+  } else if (message.type === 'statsUpdate') {
+    debugLog('Received stats update:', message);
+    updateStats(message.stats);
   }
 });
 
-// Initialize when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  debugLog('DOM content loaded');
-  initializeUI();
+// Initialize the popup when the DOM is loaded
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    debugLog('DOM loaded, initializing popup...');
+    const state = await initializePopup();
+    updateUIState(state.captureState);
+    updateTranscriptionState(state.transcriptionState);
+    updateStats(state.stats);
+    initializeUI();
+  } catch (error) {
+    debugLog('Failed to initialize popup:', error);
+    showNotification('Initialization Error', 'Failed to initialize popup. Please reload the extension.');
+  }
 });

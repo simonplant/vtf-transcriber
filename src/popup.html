@@ -27,49 +27,52 @@
       <h1>VTF Audio</h1>
     </div>
 
-    <div class="status-section" id="capture-status">
+    <div class="status-section" id="captureStatus">
       <h2>Capture Status</h2>
       <div class="status-item">
         <span>Status</span>
-        <span id="capture-state">Inactive</span>
+        <span>
+          <span id="statusIndicator" class="status-indicator"></span>
+          <span id="statusText">Inactive</span>
+        </span>
       </div>
       <div class="status-item">
         <span>Duration</span>
-        <span id="capture-duration">00:00</span>
+        <span id="captureDuration">00:00</span>
       </div>
     </div>
 
-    <div class="status-section" id="transcription-status">
+    <div class="status-section" id="transcriptionStatus">
       <h2>Transcription Status</h2>
       <div class="status-item">
         <span>Status</span>
-        <span id="transcription-state">Inactive</span>
+        <span id="transcriptionStatusText">Inactive</span>
       </div>
       <div class="status-item">
         <span>Last Update</span>
-        <span id="last-update">Never</span>
+        <span id="lastUpdate">Never</span>
       </div>
     </div>
 
-    <div class="stats-section" id="stats-section" style="display: flex; gap: 16px;">
+    <div class="stats-section" id="statsContainer" style="display: flex; gap: 16px;">
       <div class="stat-item">
-        <div class="stat-value" id="total-duration">0s</div>
+        <div class="stat-value" id="totalDuration">0s</div>
         <div class="stat-label">Total Duration</div>
       </div>
       <div class="stat-item">
-        <div class="stat-value" id="total-transcriptions">0</div>
+        <div class="stat-value" id="totalTranscriptions">0</div>
         <div class="stat-label">Transcriptions</div>
       </div>
       <div class="stat-item">
-        <div class="stat-value" id="error-count">0</div>
+        <div class="stat-value" id="errorCount">0</div>
         <div class="stat-label">Errors</div>
       </div>
     </div>
 
     <div class="button-container">
-      <button id="start-capture">Start Capture</button>
-      <button id="stop-capture" disabled>Stop Capture</button>
-      <button id="test-connection">Test Connection</button>
+      <button id="startCaptureBtn">Start Capture</button>
+      <button id="stopCaptureBtn" disabled>Stop Capture</button>
+      <button id="testConnectionBtn">Test Connection</button>
     </div>
   </div>
   <script src="popup.js"></script>

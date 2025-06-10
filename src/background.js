@@ -1,49 +1,83 @@
 // Service Worker Lifecycle Events
 self.addEventListener('install', (event) => {
   console.log('VTF Service Worker Installing...');
+  // Skip waiting to ensure we get the latest version
+  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   console.log('VTF Service Worker Activated');
+  // Claim clients to ensure we control all pages
+  event.waitUntil(clients.claim());
 });
 
 // Debug logging function with timestamp
 function debugLog(message, data = null) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[VTF ${timestamp}] ${message}`;
-  console.log(logMessage, data || '');
-  
-  // Forward log to content script if we have an active tab
-  if (activeTabId) {
-    chrome.tabs.sendMessage(activeTabId, {
-      type: 'log',
-      message: logMessage,
-      data: data
-    }).catch(() => {
-      // Ignore errors if content script isn't ready
-    });
+  chrome.storage.local.get({ debugMode: false }, (items) => {
+    if (items.debugMode) {
+      const timestamp = new Date().toISOString();
+      const logMessage = `[VTF ${timestamp}] ${message}`;
+      console.log(logMessage, data || '');
+      
+      // Forward log to content script if we have an active tab
+      if (activeTabId) {
+        chrome.tabs.sendMessage(activeTabId, {
+          type: 'log',
+          message: logMessage,
+          data: data
+        }).catch(() => {
+          // Ignore errors if content script isn't ready
+        });
+      }
+    }
+  });
+}
+
+// Initialize state with persistence
+let activeTabId = null;
+
+// Load persisted state on startup
+async function loadPersistedState() {
+  try {
+    const { persistedTabId } = await chrome.storage.local.get('persistedTabId');
+    if (persistedTabId) {
+      activeTabId = persistedTabId;
+      debugLog('Restored persisted tab ID:', activeTabId);
+    }
+  } catch (error) {
+    debugLog('Failed to load persisted state:', error);
   }
 }
 
-// Initialize state
-let activeTabId = null;
+// Save state when it changes
+async function saveState() {
+  try {
+    await chrome.storage.local.set({
+      persistedTabId: activeTabId,
+      captureState: activeTabId ? 'active' : 'inactive',
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error) {
+    debugLog('Failed to save state:', error);
+  }
+}
 
 // Extension Lifecycle Events
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
   console.log('VTF Extension Started');
-  // Clear any stale state
-  chrome.storage.local.set({
+  await loadPersistedState();
+  // Clear any stale session state, but preserve stats
+  await chrome.storage.local.set({
     captureState: 'inactive',
-    transcriptionState: 'inactive',
-    stats: { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 },
-    lastUpdate: 'Never'
+    transcriptionState: 'inactive'
   });
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
   console.log('VTF Extension Installed/Updated');
+  await loadPersistedState();
   // Clear any stale state
-  chrome.storage.local.set({
+  await chrome.storage.local.set({
     captureState: 'inactive',
     transcriptionState: 'inactive',
     stats: { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 },
@@ -62,31 +96,69 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 // --- Offscreen Document Management ---
+let offscreenDocument = null;
+
 async function hasOffscreenDocument() {
   if (chrome.runtime.getContexts) {
     const existingContexts = await chrome.runtime.getContexts({
       contextTypes: ['OFFSCREEN_DOCUMENT']
     });
-    const hasDoc = !!existingContexts.find(c => c.documentUrl?.endsWith('offscreen.html'));
-    debugLog('Checking offscreen document:', { exists: hasDoc });
-    return hasDoc;
+    const doc = existingContexts.find(c => c.documentUrl?.endsWith('offscreen.html'));
+    if (doc) {
+      offscreenDocument = doc;
+      debugLog('Found existing offscreen document:', doc.documentUrl);
+      return true;
+    }
   }
   return false;
 }
 
 async function setupOffscreenDocument() {
   debugLog('Setting up offscreen document...');
-  if (await hasOffscreenDocument()) {
-    debugLog('Offscreen document already exists');
-    return;
-  }
   try {
+    // Check if we already have an offscreen document
+    const existingContexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT']
+    });
+    
+    const existingOffscreen = existingContexts.find(
+      context => context.documentUrl?.endsWith('offscreen.html')
+    );
+
+    if (existingOffscreen) {
+      debugLog('Offscreen document already exists');
+      return;
+    }
+
+    // Create the offscreen document
     await chrome.offscreen.createDocument({
       url: 'offscreen.html',
-      reasons: ['USER_MEDIA'],
+      reasons: ['AUDIO_CAPTURE'],
       justification: 'Recording tab audio for transcription.'
     });
+
     debugLog('Offscreen document created successfully');
+
+    // Wait for initialization
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Offscreen document initialization timeout'));
+      }, 5000);
+
+      const listener = (message) => {
+        if (message.type === 'offscreen-ready') {
+          clearTimeout(timeout);
+          chrome.runtime.onMessage.removeListener(listener);
+          resolve();
+        } else if (message.type === 'offscreen-error') {
+          clearTimeout(timeout);
+          chrome.runtime.onMessage.removeListener(listener);
+          reject(new Error(message.error));
+        }
+      };
+
+      chrome.runtime.onMessage.addListener(listener);
+    });
   } catch (error) {
     debugLog('Failed to create offscreen document:', error);
     throw error;
@@ -206,15 +278,51 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     case 'get-status':
       debugLog('Processing get-status request');
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs.length === 0) {
-          debugLog('Status check failed: No active tab found');
-          sendResponse({ isActive: false });
+      chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+        if (chrome.runtime.lastError) {
+          debugLog('Error querying tabs:', chrome.runtime.lastError.message);
+          sendResponse({ isActive: false, offscreenStatus: 'error' });
           return;
         }
+        
+        if (tabs.length === 0) {
+          debugLog('Status check failed: No active tab found');
+          sendResponse({ isActive: false, offscreenStatus: 'inactive' });
+          return;
+        }
+
         const isActive = activeTabId === tabs[0].id;
         debugLog('Status check result:', { isActive, activeTabId, currentTabId: tabs[0].id });
-        sendResponse({ isActive });
+
+        // Check offscreen document status robustly
+        try {
+          const existingContexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+          if (existingContexts.length > 0) {
+            // It exists, so we can query it
+            const offscreenStatus = await chrome.runtime.sendMessage({ type: 'check-status' });
+            sendResponse({
+              isActive,
+              offscreenStatus: offscreenStatus?.status || 'inactive',
+              isRecording: offscreenStatus?.isRecording || false
+            });
+          } else {
+            // It does not exist, which is a normal state before capture
+            sendResponse({
+              isActive,
+              offscreenStatus: 'inactive',
+              isRecording: false
+            });
+          }
+        } catch (error) {
+          debugLog('Error checking offscreen status:', error);
+          // If messaging fails, it could be because the document is closing.
+          // This is not a critical extension error, but a transient state.
+          sendResponse({
+            isActive,
+            offscreenStatus: 'inactive',
+            isRecording: false
+          });
+        }
       });
       return true; // Keep message channel open for async response
 
@@ -233,105 +341,84 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       debugLog('Recording error from offscreen document:', request.error);
       showNotification('Recording Error', request.error);
       // Update state to reflect the error
-      chrome.storage.local.set({ captureState: 'error' });
-      // Notify popup if it's open
-      chrome.runtime.sendMessage({
-        type: 'stateUpdate',
-        captureState: 'error'
-      }).catch(() => {
-        // Ignore errors if popup isn't open
+      activeTabId = null;
+      saveState().then(() => {
+        updateIcon(false);
+        // Notify popup if it's open
+        chrome.runtime.sendMessage({
+          type: 'stateUpdate',
+          captureState: 'error'
+        }).catch(() => {
+          // Ignore errors if popup isn't open
+        });
+        sendResponse({ status: 'ok' });
+      }).catch(error => {
+        debugLog('Failed to save state:', error);
+        sendResponse({ status: 'error', error: error.message });
       });
-      sendResponse({ status: 'ok' });
-      break;
+      return true; // Keep message channel open for async response
   }
 });
 
 // --- Capture Control Functions ---
 async function startCapture(tabId) {
   debugLog('Starting capture for tab:', tabId);
-  
-  // Check if capture is already active
-  if (activeTabId) {
-    debugLog('Capture already active:', { activeTabId });
-    showNotification('Capture In Progress', 'A capture is already active. Please stop it first.');
-    return;
-  }
-
   try {
-    // Get the stream ID for the tab
-    const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
-    
-    // Capture the tab audio
-    const stream = await new Promise((resolve, reject) => {
-      chrome.tabCapture.capture({
-        audio: true,
-        video: false,
-        audioConstraints: {
-          mandatory: {
-            chromeMediaSource: 'tab',
-            chromeMediaSourceId: streamId
-          }
-        }
-      }, (stream) => {
-        if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError);
-        } else {
-          resolve(stream);
-        }
-      });
-    });
-
-    // Create offscreen document if it doesn't exist
+    // Ensure offscreen document is ready
     await setupOffscreenDocument();
 
-    // Send the stream to the offscreen document
-    chrome.runtime.sendMessage({
-      target: 'offscreen',
+    // Get tab capture stream
+    const stream = await chrome.tabCapture.capture({
+      audio: true,
+      video: false
+    });
+
+    if (!stream) {
+      throw new Error('Failed to capture tab audio');
+    }
+
+    // Start recording in offscreen document
+    await chrome.runtime.sendMessage({
       type: 'start-recording',
       stream: stream
     });
 
+    // Update state
     activeTabId = tabId;
+    await saveState();
+    updateIcon(true);
+
     debugLog('Capture started successfully');
-    
-    // Update icon state
-    chrome.action.setIcon({
-      path: {
-        16: 'icons/icon16-active.png',
-        48: 'icons/icon48-active.png',
-        128: 'icons/icon128-active.png'
-      }
-    });
-    
-    // Update storage
-    await chrome.storage.local.set({ captureState: 'active' });
-    
   } catch (error) {
     debugLog('Failed to start capture:', error);
-    showNotification('Capture Failed', error.message);
     throw error;
   }
 }
 
 async function stopCapture() {
-  debugLog('Stopping capture');
-  if (!activeTabId) {
-    debugLog('No active capture to stop');
-    return;
-  }
-  chrome.runtime.sendMessage({ type: 'stop-recording', target: 'offscreen' });
-  await cleanup();
-}
+  debugLog('Stopping capture...');
+  try {
+    // Stop recording in offscreen document
+    await chrome.runtime.sendMessage({ type: 'stop-recording' });
 
-async function cleanup() {
-  debugLog('Cleaning up resources');
-  activeTabId = null;
-  updateIcon(false);
-  if (await hasOffscreenDocument()) {
+    // Close the offscreen document to release resources
     await chrome.offscreen.closeDocument();
-    debugLog('Offscreen document closed');
+    debugLog('Offscreen document closed.');
+
+    // Update state
+    activeTabId = null;
+    await saveState();
+    updateIcon(false);
+
+    debugLog('Capture stopped successfully');
+  } catch (error) {
+    debugLog('Failed to stop capture:', error);
+    // Even if there's an error, try to clean up state
+    activeTabId = null;
+    await saveState();
+    updateIcon(false);
+    throw error;
   }
-  debugLog('Cleanup completed');
 }
 
 function updateIcon(isRecording) {

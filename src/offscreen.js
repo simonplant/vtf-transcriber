@@ -2,38 +2,101 @@
 
 let mediaRecorder;
 let recordingStream;
+let isInitialized = false;
 
 // Simple debug logging function
-function debugLog(message) {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.sync) {
-        chrome.storage.sync.get({ debugMode: false }, (items) => {
-            if (items.debugMode) {
-                console.log('[VTF DEBUG]', message);
-            }
+function debugLog(message, data = null) {
+    chrome.storage.local.get({ debugMode: false }, (items) => {
+        if (items.debugMode) {
+            console.log('[VTF Offscreen]', message, data || '');
+            // Send log to background script
+            chrome.runtime.sendMessage({
+                type: 'log',
+                message: `[VTF Offscreen] ${message}`,
+                data: data
+            }).catch(() => {
+                // Ignore errors if background script isn't ready
+            });
+        }
+    });
+}
+
+// Initialize the offscreen document
+async function initialize() {
+    try {
+        debugLog('Initializing offscreen document...');
+        
+        // Verify we have the necessary APIs
+        if (!window.MediaRecorder) {
+            throw new Error('MediaRecorder API not available');
+        }
+        
+        // Test if we can create a MediaRecorder
+        const testStream = new MediaStream();
+        const testRecorder = new MediaRecorder(testStream);
+        testRecorder.stop();
+        testStream.getTracks().forEach(track => track.stop());
+        
+        isInitialized = true;
+        debugLog('Offscreen document initialized successfully');
+        
+        // Notify background script of successful initialization
+        chrome.runtime.sendMessage({
+            type: 'offscreen-ready',
+            status: 'initialized'
+        }).catch(error => {
+            debugLog('Failed to send ready message:', error);
+        });
+    } catch (error) {
+        debugLog('Failed to initialize offscreen document:', error);
+        // Notify background script of initialization failure
+        chrome.runtime.sendMessage({
+            type: 'offscreen-error',
+            error: error.message
+        }).catch(() => {
+            // Ignore errors if background script isn't ready
         });
     }
 }
 
-// Log initialization
-debugLog('Offscreen document initializing...');
+// Handle messages from the background script
+async function handleMessages(message, sender, sendResponse) {
+    if (!isInitialized) {
+        debugLog('Received message before initialization:', message);
+        sendResponse({ status: 'error', error: 'Offscreen document not initialized' });
+        return;
+    }
 
-chrome.runtime.onMessage.addListener(handleMessages);
-
-async function handleMessages(message) {
-    // No target check needed here; background script is the only sender.
-    switch (message.type) {
-        case 'start-recording':
-            await startRecording(message.stream);
-            break;
-        case 'stop-recording':
-            stopRecording();
-            break;
+    try {
+        switch (message.type) {
+            case 'start-recording':
+                await startRecording(message.stream);
+                sendResponse({ status: 'ok' });
+                break;
+            case 'stop-recording':
+                stopRecording();
+                sendResponse({ status: 'ok' });
+                break;
+            case 'check-status':
+                sendResponse({ 
+                    status: 'ok',
+                    isInitialized,
+                    isRecording: mediaRecorder?.state === 'recording'
+                });
+                break;
+            default:
+                debugLog('Unknown message type:', message.type);
+                sendResponse({ status: 'error', error: 'Unknown message type' });
+        }
+    } catch (error) {
+        debugLog('Error handling message:', error);
+        sendResponse({ status: 'error', error: error.message });
     }
 }
 
 async function startRecording(stream) {
     if (mediaRecorder?.state === 'recording') {
-        console.warn('Recording is already in progress.');
+        debugLog('Recording is already in progress');
         return;
     }
 
@@ -51,33 +114,42 @@ async function startRecording(stream) {
 
         mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
-                // Send the audio blob back to the service worker.
+                debugLog('Audio chunk available:', { size: event.data.size });
+                // Send the audio blob back to the service worker
                 chrome.runtime.sendMessage({
                     type: 'audio-blob',
                     data: { 
                         blob: event.data,
                         timestamp: new Date().toISOString()
                     }
+                }).catch(error => {
+                    debugLog('Failed to send audio blob:', error);
                 });
             }
         };
 
         mediaRecorder.onstop = () => {
-            console.log("MediaRecorder stopped, cleaning up.");
+            debugLog('MediaRecorder stopped, cleaning up');
             cleanup();
+        };
+
+        mediaRecorder.onerror = (event) => {
+            debugLog('MediaRecorder error:', event.error);
+            chrome.runtime.sendMessage({
+                type: 'recording-error',
+                error: event.error.message
+            }).catch(error => {
+                debugLog('Failed to send error message:', error);
+            });
         };
         
         // Create a chunk every 10 seconds for better transcription
-        mediaRecorder.start(10000); 
-        console.log('Offscreen recording started with optimized settings.');
-
+        mediaRecorder.start(10000);
+        debugLog('Recording started with optimized settings');
     } catch (error) {
-        console.error('Error starting offscreen recording:', error);
-        // Notify the background script of the error
-        chrome.runtime.sendMessage({
-            type: 'recording-error',
-            error: error.message
-        });
+        debugLog('Error starting recording:', error);
+        cleanup();
+        throw error;
     }
 }
 
@@ -85,17 +157,27 @@ function stopRecording() {
     if (mediaRecorder?.state === 'recording') {
         mediaRecorder.stop();
     }
-    // The 'onstop' event listener will handle cleanup.
+    cleanup();
 }
 
 function cleanup() {
+    if (mediaRecorder) {
+        mediaRecorder = null;
+    }
     if (recordingStream) {
         recordingStream.getTracks().forEach(track => track.stop());
         recordingStream = null;
     }
-    mediaRecorder = null;
-    console.log('Offscreen resources cleaned up.');
 }
 
-// Log successful initialization
-debugLog('Offscreen document initialized successfully'); 
+// Set up message listener
+chrome.runtime.onMessage.addListener(handleMessages);
+
+// Initialize when the document loads
+document.addEventListener('DOMContentLoaded', initialize);
+
+// Handle unload
+window.addEventListener('unload', () => {
+    debugLog('Offscreen document unloading');
+    cleanup();
+}); 

@@ -13,28 +13,68 @@ function debugLog(...args) {
     });
 }
 
+// Get UI elements
 const apiKeyInput = document.getElementById('apiKey');
+const debugModeCheckbox = document.getElementById('debugMode');
 const saveButton = document.getElementById('save');
 const statusElement = document.getElementById('status');
 
+// Load saved settings
 async function loadOptions() {
-    const data = await chrome.storage.local.get('apiKey');
-    if (data.apiKey) {
-        apiKeyInput.placeholder = "API Key is set. Enter a new key to change it.";
+    try {
+        const data = await chrome.storage.local.get(['apiKey', 'debugMode']);
+        
+        // Set API key placeholder if it exists
+        if (data.apiKey) {
+            apiKeyInput.placeholder = "API Key is set. Enter a new key to change it.";
+        }
+        
+        // Set debug mode checkbox
+        debugModeCheckbox.checked = data.debugMode || false;
+        
+        debugLog('Options loaded:', data);
+    } catch (error) {
+        console.error('Failed to load options:', error);
+        showStatus('Failed to load settings', 'warning');
     }
 }
 
+// Save settings
 async function saveOptions() {
-    // Only save if the input has a value.
-    if (apiKeyInput.value) {
-        await chrome.storage.local.set({ apiKey: apiKeyInput.value });
-        statusElement.textContent = 'API Key saved successfully!';
-        apiKeyInput.value = ''; // Clear the input after saving
+    try {
+        const settings = {
+            apiKey: apiKeyInput.value || (await chrome.storage.local.get('apiKey')).apiKey,
+            debugMode: debugModeCheckbox.checked
+        };
+
+        // Only save if we have an API key
+        if (!settings.apiKey) {
+            showStatus('Please enter an API key to save.', 'warning');
+            return;
+        }
+
+        await chrome.storage.local.set(settings);
+        
+        // Clear the API key input but keep the value in storage
+        apiKeyInput.value = '';
         apiKeyInput.placeholder = "API Key is set. Enter a new key to change it.";
-    } else {
-        statusElement.textContent = 'Please enter an API key to save.';
+        
+        showStatus('Settings saved successfully!', 'success');
+        debugLog('Settings saved:', { ...settings, apiKey: '***' });
+    } catch (error) {
+        console.error('Failed to save options:', error);
+        showStatus('Failed to save settings', 'warning');
     }
-    setTimeout(() => { statusElement.textContent = ''; }, 3000);
+}
+
+// Show status message
+function showStatus(message, type = 'success') {
+    statusElement.textContent = message;
+    statusElement.className = `status ${type}`;
+    setTimeout(() => { 
+        statusElement.textContent = '';
+        statusElement.className = 'status';
+    }, 3000);
 }
 
 // Initialize

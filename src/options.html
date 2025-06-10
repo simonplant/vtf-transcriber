@@ -82,7 +82,11 @@
             <label for="apiKey">OpenAI API Key:</label>
             <input type="text" id="apiKey" placeholder="Enter your OpenAI API key" autocomplete="off" spellcheck="false">
         </div>
-        <button id="save">Save API Key</button>
+        <div class="checkbox-group">
+            <input type="checkbox" id="debugMode">
+            <label for="debugMode">Enable Debug Mode</label>
+        </div>
+        <button id="save">Save Settings</button>
         <div id="status"></div>
     </div>
     <script src="options.js"></script>
