@@ -19,7 +19,7 @@ GREEN := \033[0;32m
 RED := \033[0;31m
 NC := \033[0m # No Color
 
-.PHONY: all clean load help package
+.PHONY: all dev dist clean help package
 
 # === Core Targets ===
 
@@ -54,10 +54,28 @@ load:
 
 # Display this help message
 help:
-	@echo "$(CYAN)VTF Audio Transcriber Chrome Extension Makefile$(NC)"
+	@echo "VTF Audio Transcriber - Makefile Commands"
 	@echo ""
-	@echo "Usage:"
-	@echo "  $(GREEN)make package$(NC)  - Create a zip file of the extension for distribution"
-	@echo "  $(GREEN)make clean$(NC)    - Remove all generated release files"
-	@echo "  $(GREEN)make load$(NC)     - Open Chrome with the extension loaded from src directory"
+	@echo "Development:"
+	@echo "  $(GREEN)make dev$(NC)      - Instructions for loading extension in development mode"
+	@echo ""
+	@echo "Distribution:"
+	@echo "  $(GREEN)make dist$(NC)     - Create zip package for Chrome Web Store submission"
+	@echo ""
+	@echo "Maintenance:"
+	@echo "  $(GREEN)make clean$(NC)    - Remove generated files"
 	@echo "  $(GREEN)make help$(NC)     - Show this help message"
+
+# Development commands
+dev:
+	@echo "Loading extension in development mode..."
+	@echo "1. Open Chrome and go to chrome://extensions/"
+	@echo "2. Enable 'Developer mode'"
+	@echo "3. Click 'Load unpacked' and select the 'src' directory"
+
+# Distribution commands
+dist:
+	@echo "Creating distribution package..."
+	@mkdir -p release
+	@cd src && zip -r ../release/vtf-transcriber.zip . -x "*.DS_Store" "*.git*"
+	@echo "Package created at release/vtf-transcriber.zip"
