@@ -15,12 +15,19 @@ NC      := \033[0m # No Color
 
 # === Target Definitions ===
 # Declares targets that are not files.
-.PHONY: all watch dist clean help
+.PHONY: all watch dist clean help dev
 
 # --- Core Targets ---
 
 # Default target runs when you just type 'make'.
 all: help
+
+# Fail-safe for the old, removed 'dev' command.
+dev:
+	@echo "$(RED)Error: The 'make dev' command has been removed.$(NC)"
+	@echo "Please use the new development command: $(GREEN)make watch$(NC)"
+	@echo "This new command will automatically rebuild the extension when you save changes."
+	@exit 1
 
 # The new development command.
 # This task watches for file changes and automatically rebuilds the extension.

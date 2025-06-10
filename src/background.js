@@ -4,265 +4,214 @@
 //
 // ===================================================================================
 
-// --- Constants and State Management ---
-
-const DEBUG = true; // Set to true to enable detailed console logging
-
-// The single source of truth for the extension's state.
+// --- State Management ---
 let state = {
   apiKey: '',
-  debugMode: false, // Default debug mode to false
+  debugMode: false,
   captureState: 'inactive', // 'inactive', 'active', 'error'
   transcriptionState: 'inactive', // 'inactive', 'transcribing', 'error'
-  transcriptionLog: [], // Holds the history of transcriptions for the current session
   activeTabId: null,
-  stats: {
-    totalDuration: 0,
-    totalTranscriptions: 0,
-    errorCount: 0
-  }
+  transcriptionLog: [],
+  stats: { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 }
 };
 
-// Simple logger that respects the debugMode flag in the state.
-const log = (...args) => {
-  if (state.debugMode) {
-    console.log('[VTF BG]', ...args);
-  }
-};
+// --- Global Variables for Capture ---
+let mediaRecorder = null; 
+let audioStream = null;
 
-// Updates the state in memory, persists it to storage, and notifies listeners.
+const log = (...args) => state.debugMode && console.log('[VTF BG]', ...args);
+
+// --- Core Functions ---
 async function setState(newState) {
   Object.assign(state, newState);
   await chrome.storage.local.set({ appState: state });
   log('State updated:', state);
-  // Notify the popup of the change
-  chrome.runtime.sendMessage({ type: 'stateUpdate', data: state }).catch(() => log('Popup not open.'));
+  chrome.runtime.sendMessage({ type: 'stateUpdate', data: state }).catch(() => {});
 }
 
-// --- Initialization ---
-
-// Loads the state from storage when the extension starts.
 async function initializeState() {
   const { appState } = await chrome.storage.local.get('appState');
   if (appState) {
-    // Merge stored state with default, in case new properties were added
     Object.assign(state, appState);
-    // Reset transient states
     state.captureState = 'inactive';
     state.transcriptionState = 'inactive';
     state.activeTabId = null;
+    state.transcriptionLog = [];
   }
-  // Persist the potentially cleaned state
   await setState(state);
   log('Initial state loaded.', state);
 }
 
-chrome.runtime.onStartup.addListener(initializeState);
-chrome.runtime.onInstalled.addListener(initializeState);
+// *** THE PRIMARY FIX IS HERE ***
+async function startCapture(tab) {
+  log(`Attempting to start capture for tab: ${tab.id}`);
 
-// --- Core Logic: Capture and Transcription ---
+  // 1. ADDED GUARD: Check if the URL is a restricted page.
+  const url = tab.url;
+  if (!url || url.startsWith('chrome://') || url.startsWith('https://chrome.google.com')) {
+    const errorMsg = 'Cannot capture audio on this page. Please use on a standard website (http or https).';
+    log(errorMsg);
+    const newLogEntry = { timestamp: new Date().toISOString(), text: errorMsg, speaker: 'System' };
+    await setState({ 
+      captureState: 'error', 
+      transcriptionLog: [newLogEntry] 
+    });
+    return;
+  }
 
-async function startCapture(tabId) {
-  log('Attempting to start capture...');
-  if (state.activeTabId) {
-    log('Capture already active.');
+  if (mediaRecorder?.state === 'recording') {
+    log('Capture is already active. Ignoring request.');
     return;
   }
 
   try {
-    // 1. Setup and create the offscreen document, passing the target tabId
-    await setupOffscreenDocument('offscreen.html');
-    
-    // 2. Send a message to the offscreen document to start recording
-    await chrome.runtime.sendMessage({
-      type: 'start-recording',
-      target: 'offscreen',
-      tabId: tabId, // Pass the tabId to the offscreen document
-      debugMode: state.debugMode
+    // 2. Capture the tab's audio stream.
+    audioStream = await chrome.tabCapture.capture({
+        audio: true,
+        video: false,
+        targetTabId: tab.id
     });
 
-    // 3. Update our state, clearing the log for the new session
-    await setState({ 
-      captureState: 'active', 
-      activeTabId: tabId,
-      transcriptionLog: [] // Clear log on new capture
-    });
+    // 3. Setup the MediaRecorder.
+    mediaRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        transcribeAudio(event.data);
+      }
+    };
+
+    mediaRecorder.onstop = () => {
+      log('MediaRecorder stopped.');
+      if(audioStream) {
+        audioStream.getTracks().forEach(track => track.stop());
+      }
+      audioStream = null;
+      mediaRecorder = null;
+    };
+    
+    mediaRecorder.start(10000);
+
+    // 4. Update state and UI.
+    await setState({ captureState: 'active', activeTabId: tab.id, transcriptionLog: [] });
     updateIcon();
-    log('Capture started successfully for tab:', tabId);
+    log('Capture initiated successfully.');
 
   } catch (error) {
     log('Error starting capture:', error.message);
     await setState({ captureState: 'error', activeTabId: null });
     updateIcon();
-    await cleanupOffscreenDocument();
+    if (audioStream) audioStream.getTracks().forEach(track => track.stop());
   }
 }
 
 async function stopCapture() {
   log('Attempting to stop capture...');
-  if (!state.activeTabId) {
-    log('No active capture to stop.');
-    return;
-  }
+  await setState({ captureState: 'inactive', transcriptionState: 'inactive', activeTabId: null });
+  updateIcon();
 
-  try {
-    // Tell the offscreen document to stop recording.
-    await chrome.runtime.sendMessage({ type: 'stop-recording', target: 'offscreen' });
-  } catch(e) {
-    log("Could not communicate with offscreen doc to stop, will close it.", e.message);
-  } finally {
-    // Always clean up the state and offscreen document
-    await cleanupOffscreenDocument();
-    await setState({ captureState: 'inactive', transcriptionState: 'inactive', activeTabId: null });
-    updateIcon();
-    log('Capture stopped and cleaned up.');
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
   }
+  log('Capture stop process initiated.');
 }
 
 async function transcribeAudio(audioBlob) {
-  log(`Transcribing audio chunk of size ${audioBlob.size}...`);
-  if (!state.apiKey) {
-    log('Transcription failed: API key missing');
-    showNotification('API Key Missing', 'Please set your OpenAI API key in the options.');
-    await setState({ transcriptionState: 'error', stats: { ...state.stats, errorCount: state.stats.errorCount + 1 } });
-    return;
-  }
-  
-  await setState({ transcriptionState: 'transcribing' });
-  
-  try {
-    const formData = new FormData();
-    formData.append('file', audioBlob, 'audio.webm');
-    formData.append('model', 'whisper-1');
-
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${state.apiKey}` },
-      body: formData
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || `API Error: ${response.status}`);
+    if (!state.apiKey) {
+      const errorMsg = 'API Key is missing. Please set it in the options.';
+      const newLogEntry = { timestamp: new Date().toISOString(), text: errorMsg, speaker: 'System' };
+      await setState({ transcriptionState: 'error', transcriptionLog: [...state.transcriptionLog, newLogEntry] });
+      return;
     }
-
-    const result = await response.json();
-    log('Transcription received:', result.text);
-    const newTranscription = result.text?.trim();
-
-    if (newTranscription) {
-      showNotification('Transcription Received', newTranscription);
-      // Add the new transcription to the log
-      const newLog = [...state.transcriptionLog, newTranscription];
-      await setState({
-        transcriptionState: 'inactive',
-        transcriptionLog: newLog,
-        stats: {
-          ...state.stats,
-          totalTranscriptions: state.stats.totalTranscriptions + 1,
-          totalDuration: state.stats.totalDuration + 10 // Chunks are 10s
-        }
+    
+    await setState({ transcriptionState: 'transcribing' });
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'audio.webm');
+      formData.append('model', 'whisper-1');
+  
+      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${state.apiKey}` },
+        body: formData
       });
-    } else {
-      // Don't treat empty transcriptions as an error, just ignore them.
-      log('Received empty transcription from API.');
-      await setState({ transcriptionState: 'inactive' });
+  
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || `API Error: ${response.status}`);
+      }
+  
+      const result = await response.json();
+      log('Transcription received:', result.text);
+  
+      if (result.text && result.text.trim()) {
+        const newLogEntry = {
+          timestamp: new Date().toISOString(),
+          text: result.text.trim(),
+          speaker: state.transcriptionLog.length % 2 === 0 ? 'Moderator' : 'Member'
+        };
+        await setState({
+          transcriptionState: 'inactive',
+          transcriptionLog: [...state.transcriptionLog, newLogEntry],
+          stats: { ...state.stats, totalTranscriptions: state.stats.totalTranscriptions + 1, totalDuration: state.stats.totalDuration + 10 }
+        });
+      } else {
+        await setState({ transcriptionState: 'inactive' });
+      }
+    } catch (error) {
+      log('Transcription failed:', error.message);
+      const newLogEntry = { timestamp: new Date().toISOString(), text: `Transcription Failed: ${error.message}`, speaker: 'System' };
+      await setState({
+        transcriptionState: 'error',
+        transcriptionLog: [...state.transcriptionLog, newLogEntry],
+        stats: { ...state.stats, errorCount: state.stats.errorCount + 1 }
+      });
     }
-  } catch (error) {
-    log('Transcription failed:', error.message);
-    showNotification('Transcription Failed', error.message);
-    await setState({
-      transcriptionState: 'error',
-      stats: { ...state.stats, errorCount: state.stats.errorCount + 1 }
-    });
-  }
 }
-
-// --- Offscreen Document Management ---
-
-async function setupOffscreenDocument(path) {
-  const existingContexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
-  if (existingContexts.find(c => c.documentUrl.endsWith(path))) {
-    log('Offscreen document already exists.');
-    return;
-  }
-  await chrome.offscreen.createDocument({
-    url: path,
-    reasons: ['USER_MEDIA'],
-    justification: 'To record tab audio for transcription.'
-  });
-  log('Offscreen document created.');
-}
-
-async function cleanupOffscreenDocument() {
-  const existingContexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
-  if (existingContexts.length > 0) {
-    await chrome.offscreen.closeDocument();
-    log('Offscreen document closed.');
-  }
-}
-
-// --- UI Helpers ---
 
 function updateIcon() {
   const isRecording = state.captureState === 'active';
-  const badgeText = isRecording ? 'REC' : '';
-  
-  chrome.action.setBadgeText({ text: badgeText });
-  chrome.action.setBadgeBackgroundColor({ color: '#FF0000' });
-}
-
-function showNotification(title, message) {
-  chrome.notifications.create({
-    type: 'basic',
-    iconUrl: 'icons/icon128.png',
-    title,
-    message,
-    priority: 2
-  });
+  chrome.action.setBadgeText({ text: isRecording ? 'REC' : '' });
+  chrome.action.setBadgeBackgroundColor({ color: '#d93025' });
 }
 
 // --- Event Listeners ---
-
-// Main message handler for requests from other parts of the extension
+// *** SIMPLIFIED MESSAGE LISTENER ***
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  log('Received message:', request.type, 'from', sender.url?.split('/').pop());
-
-  // Handle the 'get-status' request separately because it's synchronous
-  // and doesn't return a promise that needs a .catch handler.
   if (request.type === 'get-status') {
     sendResponse(state);
-    return true; // Return true to indicate you will be calling sendResponse.
+    return true; // Keep channel open for the synchronous response.
   }
 
-  // Use a handler map for clean, async routing of all other messages.
-  const handlers = {
-    'start-capture': () => chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => startCapture(tabs[0].id)),
-    'stop-capture': stopCapture,
-    'audio-blob': () => transcribeAudio(request.data.blob),
-    'recording-error': async () => {
-      log('Received recording error:', request.error);
-      showNotification('Recording Error', request.error);
-      await stopCapture(); // Properly await the async stopCapture function
-    },
-    'options-updated': initializeState
-  };
-
-  const handler = handlers[request.type];
-  if (handler) {
-    // Now, this line is safe because all functions in the handlers map above
-    // are guaranteed to return a Promise.
-    handler().catch(e => log(`Error in '${request.type}' handler:`, e.message));
-  }
-
-  // Return false for any message that is not handled or does not need an async response.
+  // Handle other messages asynchronously without returning true, to prevent channel closed errors.
+  (async () => {
+    switch (request.type) {
+      case 'start-capture':
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab) {
+          await startCapture(tab); // Pass the whole tab object
+        }
+        break;
+      case 'stop-capture':
+        await stopCapture();
+        break;
+      case 'options-updated':
+        await initializeState();
+        break;
+    }
+  })().catch(e => log(`Error in message handler for ${request.type}:`, e.message));
+  
+  // Return false for async handlers where we don't use sendResponse.
   return false;
 });
 
-// Stop capture if the recorded tab is closed
 chrome.tabs.onRemoved.addListener(tabId => {
   if (tabId === state.activeTabId) {
     log('Active tab closed, stopping capture.');
     stopCapture();
   }
 });
+
+chrome.runtime.onStartup.addListener(initializeState);
+chrome.runtime.onInstalled.addListener(initializeState);
