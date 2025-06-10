@@ -220,26 +220,34 @@ function showNotification(title, message) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   log('Received message:', request.type, 'from', sender.url?.split('/').pop());
 
-  // Use a handler map for clean, async routing
+  // Handle the 'get-status' request separately because it's synchronous
+  // and doesn't return a promise that needs a .catch handler.
+  if (request.type === 'get-status') {
+    sendResponse(state);
+    return true; // Return true to indicate you will be calling sendResponse.
+  }
+
+  // Use a handler map for clean, async routing of all other messages.
   const handlers = {
     'start-capture': () => chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => startCapture(tabs[0].id)),
     'stop-capture': stopCapture,
-    'get-status': () => sendResponse(state),
     'audio-blob': () => transcribeAudio(request.data.blob),
-    'recording-error': () => {
+    'recording-error': async () => {
       log('Received recording error:', request.error);
       showNotification('Recording Error', request.error);
-      stopCapture(); // Treat recording error as a trigger to stop
+      await stopCapture(); // Properly await the async stopCapture function
     },
-    'options-updated': initializeState // Re-load state if options change
+    'options-updated': initializeState
   };
 
   const handler = handlers[request.type];
   if (handler) {
+    // Now, this line is safe because all functions in the handlers map above
+    // are guaranteed to return a Promise.
     handler().catch(e => log(`Error in '${request.type}' handler:`, e.message));
-    // Return true to indicate we will respond asynchronously for get-status
-    return request.type === 'get-status'; 
   }
+
+  // Return false for any message that is not handled or does not need an async response.
   return false;
 });
 
