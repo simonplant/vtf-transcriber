@@ -15,8 +15,7 @@ const UIElements = {
   transcriptionStatus: document.getElementById('transcriptionStatusText'),
   totalDuration: document.getElementById('totalDuration'),
   totalTranscriptions: document.getElementById('totalTranscriptions'),
-  errorCount: document.getElementById('errorCount'),
-  testConnectionBtn: document.getElementById('testConnectionBtn')
+  errorCount: document.getElementById('errorCount')
 };
 
 // --- Rendering Logic ---
@@ -30,7 +29,8 @@ function render(state) {
   const isActive = state.captureState === 'active';
   const isError = state.captureState === 'error';
 
-  UIElements.startBtn.disabled = !isInactive;
+  // The user should be able to start a capture if the state is inactive OR if there was an error.
+  UIElements.startBtn.disabled = !(isInactive || isError);
   UIElements.stopBtn.disabled = !isActive;
 
   UIElements.statusIndicator.className = 'status-indicator'; // Reset
@@ -71,22 +71,6 @@ function setupEventListeners() {
     chrome.runtime.sendMessage({ type: 'stop-capture' });
   };
   
-  UIElements.testConnectionBtn.onclick = async () => {
-    log('Testing server connection...');
-    try {
-      const response = await fetch('http://localhost:3000/health');
-      const data = await response.json();
-      if (data.status === 'ok') {
-        chrome.notifications.create({ type: 'basic', iconUrl: 'icons/icon128.png', title: 'Connection Test', message: 'Server connection successful!' });
-      } else {
-        throw new Error('Server returned non-OK status.');
-      }
-    } catch (error) {
-      log('Connection test failed:', error);
-      chrome.notifications.create({ type: 'basic', iconUrl: 'icons/icon128.png', title: 'Connection Test', message: `Failed to connect to server: ${error.message}` });
-    }
-  };
-
   // Listen for state updates from the background script
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'stateUpdate') {

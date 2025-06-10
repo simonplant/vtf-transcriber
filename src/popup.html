@@ -54,25 +54,25 @@
       </div>
     </div>
 
-    <div class="stats-section" id="statsContainer" style="display: flex; gap: 16px;">
+    <div class="stats">
+      <h2>Statistics</h2>
       <div class="stat-item">
-        <div class="stat-value" id="totalDuration">0s</div>
-        <div class="stat-label">Total Duration</div>
+        <span class="stat-label">Total Duration:</span>
+        <span id="totalDuration" class="stat-value">00:00</span>
       </div>
       <div class="stat-item">
-        <div class="stat-value" id="totalTranscriptions">0</div>
-        <div class="stat-label">Transcriptions</div>
+        <span class="stat-label">Total Transcriptions:</span>
+        <span id="totalTranscriptions" class="stat-value">0</span>
       </div>
       <div class="stat-item">
-        <div class="stat-value" id="errorCount">0</div>
-        <div class="stat-label">Errors</div>
+        <span class="stat-label">Errors:</span>
+        <span id="errorCount" class="stat-value">0</span>
       </div>
     </div>
 
     <div class="button-container">
       <button id="startCaptureBtn">Start Capture</button>
       <button id="stopCaptureBtn" disabled>Stop Capture</button>
-      <button id="testConnectionBtn">Test Connection</button>
     </div>
   </div>
   <script src="popup.js"></script>

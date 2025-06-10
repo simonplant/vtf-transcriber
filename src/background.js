@@ -196,10 +196,8 @@ async function cleanupOffscreenDocument() {
 
 function updateIcon() {
   const isRecording = state.captureState === 'active';
-  const iconPath = `icons/icon48${isRecording ? '-active' : ''}.png`;
   const badgeText = isRecording ? 'REC' : '';
   
-  chrome.action.setIcon({ path: { "48": iconPath } });
   chrome.action.setBadgeText({ text: badgeText });
   chrome.action.setBadgeBackgroundColor({ color: '#FF0000' });
 }

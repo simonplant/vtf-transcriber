@@ -49,6 +49,9 @@ async function saveOptions() {
 
     if (newApiKey) {
       newState.apiKey = newApiKey;
+    } else {
+      // If the user saves an empty key, remove it from the state.
+      newState.apiKey = '';
     }
     
     await chrome.storage.local.set({ appState: newState });
