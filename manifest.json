@@ -14,7 +14,8 @@
     ],
     
     "host_permissions": [
-      "https://api.openai.com/*"
+      "https://api.openai.com/*",
+      "https://vtf.t3live.com/*"
     ],
     
     "background": {
@@ -28,11 +29,6 @@
         "48": "icons/icon48.png",
         "128": "icons/icon128.png"
       }
-    },
-    
-    "offscreen": {
-      "reasons": ["USER_MEDIA"],
-      "justification": "Recording tab audio for transcription"
     }
 }
   

@@ -1,41 +1,83 @@
 // Default settings
 const defaultSettings = {
     apiKey: '',
-    apiEndpoint: 'https://api.openai.com/v1/audio/transcriptions',
-    defaultLanguage: 'en-US',
-    maxDuration: 300
+    debugMode: false
 };
+
+// Simple debug logging function
+function debugLog(...args) {
+    chrome.storage.sync.get({ debugMode: false }, (items) => {
+        if (items.debugMode) {
+            console.log('[VTF DEBUG]', ...args);
+        }
+    });
+}
 
 // Load saved settings
 function loadSettings() {
     chrome.storage.sync.get(defaultSettings, (items) => {
-        document.getElementById('apiKey').value = items.apiKey;
-        document.getElementById('apiEndpoint').value = items.apiEndpoint;
-        document.getElementById('defaultLanguage').value = items.defaultLanguage;
-        document.getElementById('maxDuration').value = items.maxDuration;
+        const apiKeyInput = document.getElementById('apiKey');
+        const debugModeCheckbox = document.getElementById('debugMode');
+        
+        if (apiKeyInput) {
+            apiKeyInput.value = items.apiKey || '';
+        }
+        if (debugModeCheckbox) {
+            debugModeCheckbox.checked = items.debugMode || false;
+        }
+        
+        updateApiKeyStatus(items.apiKey);
+        debugLog('Settings loaded:', items);
     });
+}
+
+// Update API key status display
+function updateApiKeyStatus(apiKey) {
+    const status = document.getElementById('status');
+    if (!status) return;
+
+    if (!apiKey) {
+        status.textContent = 'No API key set. Please enter your OpenAI API key.';
+        status.className = 'status warning';
+    } else {
+        status.textContent = 'API key is set and ready to use.';
+        status.className = 'status success';
+    }
+    status.style.display = 'block';
 }
 
 // Save settings
 function saveSettings() {
+    const apiKeyInput = document.getElementById('apiKey');
+    const debugModeCheckbox = document.getElementById('debugMode');
+    if (!apiKeyInput || !debugModeCheckbox) return;
+
     const settings = {
-        apiKey: document.getElementById('apiKey').value,
-        apiEndpoint: document.getElementById('apiEndpoint').value,
-        defaultLanguage: document.getElementById('defaultLanguage').value,
-        maxDuration: parseInt(document.getElementById('maxDuration').value, 10)
+        apiKey: apiKeyInput.value,
+        debugMode: debugModeCheckbox.checked
     };
 
     chrome.storage.sync.set(settings, () => {
         const status = document.getElementById('status');
-        status.textContent = 'Settings saved.';
-        status.className = 'status success';
+        if (!status) return;
+
+        if (settings.apiKey) {
+            status.textContent = 'Settings saved successfully.';
+            status.className = 'status success';
+        } else {
+            status.textContent = 'No API key set. Please enter your OpenAI API key.';
+            status.className = 'status warning';
+        }
         status.style.display = 'block';
-        setTimeout(() => {
-            status.style.display = 'none';
-        }, 2000);
+        debugLog('Settings saved:', settings);
     });
 }
 
 // Initialize
-document.addEventListener('DOMContentLoaded', loadSettings);
-document.getElementById('save').addEventListener('click', saveSettings); 
+document.addEventListener('DOMContentLoaded', () => {
+    loadSettings();
+    const saveButton = document.getElementById('save');
+    if (saveButton) {
+        saveButton.addEventListener('click', saveSettings);
+    }
+}); 
