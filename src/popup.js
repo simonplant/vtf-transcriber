@@ -18,62 +18,35 @@ if (!startButton || !stopButton || !statusElement) {
 
 debugLog('DOM elements found successfully');
 
-// Add click handlers
+// Send a message to the background script to start the capture.
+// The background script will know which tab this came from via the `sender` object.
 startButton.addEventListener('click', async () => {
-  debugLog('Start button clicked');
+  await chrome.runtime.sendMessage({ type: 'start-capture' });
+  window.close();
+});
+
+stopButton.addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'stop-capture' });
+  window.close();
+});
+
+// When the popup opens, ask the background script for the current status.
+document.addEventListener('DOMContentLoaded', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    debugLog('Current tab:', tab.id);
-    
-    chrome.runtime.sendMessage(
-      { type: 'start-recording', target: 'service-worker' },
-      (response) => {
-        debugLog('Start recording response:', response);
-        if (response && response.status === 'started') {
-          startButton.style.display = 'none';
-          stopButton.style.display = 'block';
-          statusElement.textContent = 'Status: Recording...';
-        }
-      }
-    );
-  } catch (error) {
-    debugLog('Error starting recording:', error);
-    statusElement.textContent = 'Error: ' + error.message;
-  }
-});
-
-stopButton.addEventListener('click', () => {
-  debugLog('Stop button clicked');
-  chrome.runtime.sendMessage(
-    { type: 'stop-recording', target: 'service-worker' },
-    (response) => {
-      debugLog('Stop recording response:', response);
-      if (response && response.status === 'stopped') {
-        startButton.style.display = 'block';
-        stopButton.style.display = 'none';
-        statusElement.textContent = 'Status: Ready to start.';
-      }
-    }
-  );
-});
-
-// Check initial status
-debugLog('Checking initial status...');
-chrome.runtime.sendMessage(
-  { type: 'get-status', target: 'service-worker' },
-  (response) => {
-    debugLog('Initial status response:', response);
-    if (response && response.isRecording) {
+    // The background script compares this tab's ID to the activeTabId
+    const response = await chrome.runtime.sendMessage({ type: 'get-status' });
+    if (response?.isActive) {
+      statusElement.textContent = `Status: Recording`;
       startButton.style.display = 'none';
       stopButton.style.display = 'block';
-      statusElement.textContent = 'Status: Recording...';
     } else {
-      startButton.style.display = 'block';
-      stopButton.style.display = 'none';
-      statusElement.textContent = 'Status: Ready to start.';
+      statusElement.textContent = `Status: Inactive`;
     }
+  } catch (e) {
+    statusElement.textContent = 'Status: Ready to start.';
   }
-);
+});
 
 // Listen for messages from the background script
 chrome.runtime.onMessage.addListener((message) => {

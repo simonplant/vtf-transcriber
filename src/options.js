@@ -6,78 +6,40 @@ const defaultSettings = {
 
 // Simple debug logging function
 function debugLog(...args) {
-    chrome.storage.sync.get({ debugMode: false }, (items) => {
+    chrome.storage.local.get({ debugMode: false }, (items) => {
         if (items.debugMode) {
             console.log('[VTF DEBUG]', ...args);
         }
     });
 }
 
-// Load saved settings
-function loadSettings() {
-    chrome.storage.sync.get(defaultSettings, (items) => {
-        const apiKeyInput = document.getElementById('apiKey');
-        const debugModeCheckbox = document.getElementById('debugMode');
-        
-        if (apiKeyInput) {
-            apiKeyInput.value = items.apiKey || '';
-        }
-        if (debugModeCheckbox) {
-            debugModeCheckbox.checked = items.debugMode || false;
-        }
-        
-        updateApiKeyStatus(items.apiKey);
-        debugLog('Settings loaded:', items);
-    });
+const apiKeyInput = document.getElementById('apiKey');
+const debugModeCheckbox = document.getElementById('debugMode');
+const saveButton = document.getElementById('save');
+const statusElement = document.getElementById('status');
+
+async function loadOptions() {
+    // CORRECTED: Reads from `local` storage for both settings.
+    const data = await chrome.storage.local.get(['apiKey', 'debugMode']);
+    if (data.apiKey) apiKeyInput.placeholder = "API Key is set. Enter to change.";
+    debugModeCheckbox.checked = !!data.debugMode;
 }
 
-// Update API key status display
-function updateApiKeyStatus(apiKey) {
-    const status = document.getElementById('status');
-    if (!status) return;
-
-    if (!apiKey) {
-        status.textContent = 'No API key set. Please enter your OpenAI API key.';
-        status.className = 'status warning';
-    } else {
-        status.textContent = 'API key is set and ready to use.';
-        status.className = 'status success';
+async function saveOptions() {
+    const settings = { debugMode: debugModeCheckbox.checked };
+    if (apiKeyInput.value) settings.apiKey = apiKeyInput.value;
+    
+    // CORRECTED: Saves to `local` storage.
+    await chrome.storage.local.set(settings);
+    
+    statusElement.textContent = 'Options saved!';
+    if (apiKeyInput.value) {
+        apiKeyInput.value = '';
+        apiKeyInput.placeholder = "API Key is set.";
     }
-    status.style.display = 'block';
-}
-
-// Save settings
-function saveSettings() {
-    const apiKeyInput = document.getElementById('apiKey');
-    const debugModeCheckbox = document.getElementById('debugMode');
-    if (!apiKeyInput || !debugModeCheckbox) return;
-
-    const settings = {
-        apiKey: apiKeyInput.value,
-        debugMode: debugModeCheckbox.checked
-    };
-
-    chrome.storage.sync.set(settings, () => {
-        const status = document.getElementById('status');
-        if (!status) return;
-
-        if (settings.apiKey) {
-            status.textContent = 'Settings saved successfully.';
-            status.className = 'status success';
-        } else {
-            status.textContent = 'No API key set. Please enter your OpenAI API key.';
-            status.className = 'status warning';
-        }
-        status.style.display = 'block';
-        debugLog('Settings saved:', settings);
-    });
+    setTimeout(() => { statusElement.textContent = ''; }, 3000);
 }
 
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
-    loadSettings();
-    const saveButton = document.getElementById('save');
-    if (saveButton) {
-        saveButton.addEventListener('click', saveSettings);
-    }
-}); 
+document.addEventListener('DOMContentLoaded', loadOptions);
+saveButton.addEventListener('click', saveOptions); 
