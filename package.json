@@ -1,29 +1,47 @@
 {
   "name": "vtf-transcriber",
-  "version": "1.0.0",
+  "version": "0.7.0",
   "description": "Chrome extension for transcribing VTF audio streams",
-  "main": "audio-worklet.js",
+  "main": "src/audio-worklet.js",
   "scripts": {
     "build": "webpack --config webpack.config.js",
-    "watch": "webpack --config webpack.config.js --watch",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "webpack --config webpack.config.js --mode development --watch",
+    "clean": "rimraf dist release",
+    "validate": "node scripts/validate-extension.js",
+    "lint": "eslint src/**/*.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prebuild": "npm run clean",
+    "postbuild": "npm run validate"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/simonplant/vtf-transcriber.git"
   },
-  "keywords": ["chrome-extension", "audio", "transcription", "vtf"],
-  "author": "",
+  "keywords": [
+    "chrome-extension",
+    "audio",
+    "transcription",
+    "vtf"
+  ],
+  "author": "Simon Plant",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/simonplant/vtf-transcriber/issues"
   },
   "homepage": "https://github.com/simonplant/vtf-transcriber#readme",
   "devDependencies": {
-    "webpack": "^5.99.9",
-    "webpack-cli": "^6.0.1",
     "@babel/core": "^7.24.0",
     "@babel/preset-env": "^7.24.0",
-    "babel-loader": "^9.1.3"
+    "babel-loader": "^9.1.3",
+    "clean-webpack-plugin": "^4.0.0",
+    "copy-webpack-plugin": "^12.0.2",
+    "eslint": "^8.57.0",
+    "rimraf": "^5.0.5",
+    "webpack": "^5.99.9",
+    "webpack-cli": "^6.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0",
+    "npm": ">=6.0.0"
   }
 }

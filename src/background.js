@@ -1,3 +1,6 @@
+// A mapping of tab IDs to their recording state
+const activeTabs = new Map();
+
 // Manages the audio buffer for a single user
 class UserBufferManager {
     constructor(userId, config) {
@@ -27,12 +30,36 @@ class UserBufferManager {
     }
   }
   
-  // Main service class for the extension background
+  // --- Offscreen Document Management ---
+
+  async function hasOffscreenDocument() {
+    // Check all existing contexts for an offscreen document.
+    const existingContexts = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT']
+    });
+    return !!existingContexts.find(c => c.documentUrl?.endsWith('offscreen.html'));
+  }
+
+  async function setupOffscreenDocument() {
+    if (await hasOffscreenDocument()) {
+        console.log("Offscreen document already exists.");
+        return;
+    }
+
+    console.log("Creating offscreen document...");
+    await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['USER_MEDIA'],
+        justification: 'Recording tab audio for transcription'
+    });
+  }
+
+  // --- Main Service Logic ---
+
   class VTFTranscriptionService {
     constructor() {
       this.userBuffers = new Map();
       this.activeTranscriptions = new Map();
-      this.activeTabs = new Map();
       this.config = { 
         bufferDuration: 1.5, 
         silenceTimeout: 2000,
@@ -44,6 +71,7 @@ class UserBufferManager {
           ['XRcupJu26dK_sazaAAPK', 'DP'],
           ['O3e0pz1234K_cazaAAPK', 'Kira']
       ]);
+      this.init();
     }
   
     async init() {
@@ -55,24 +83,11 @@ class UserBufferManager {
           this.showNotification('Configuration Required', 'Please set your OpenAI API key in the extension options.');
         }
   
-        chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-          this.handleMessage(request, sender).then(sendResponse).catch(error => {
-            console.error('[Service Worker] Message handling error:', error);
-            sendResponse({ error: error.message });
-          });
-          return true;
-        });
-  
-        // Listen for changes to the API key in storage
-        chrome.storage.onChanged.addListener((changes, area) => {
-          if (area === 'local' && changes.openaiApiKey) {
-            this.apiKey = changes.openaiApiKey.newValue;
-            console.log('[Service Worker] OpenAI API key updated.');
-            if (this.apiKey) {
-              this.showNotification('API Key Updated', 'Your OpenAI API key has been successfully updated.');
-            }
-          }
-        });
+        chrome.runtime.onMessage.addListener(this.handleMessage.bind(this));
+        chrome.runtime.onMessage.addListener(this.handleMessageFromOffscreen.bind(this));
+        chrome.storage.onChanged.addListener(this.handleStorageChange.bind(this));
+        chrome.action.onClicked.addListener(this.toggleCapture.bind(this));
+        chrome.tabs.onRemoved.addListener(this.handleTabRemoval.bind(this));
   
         // Start heartbeat checker
         this.startHeartbeatChecker();
@@ -85,13 +100,102 @@ class UserBufferManager {
     startHeartbeatChecker() {
       setInterval(() => {
         const now = Date.now();
-        this.activeTabs.forEach((status, tabId) => {
+        activeTabs.forEach((status, tabId) => {
           if (now - status.lastHeartbeat > this.config.heartbeatTimeout) {
             console.log(`[Service Worker] Tab ${tabId} heartbeat timeout, marking as inactive`);
-            this.activeTabs.delete(tabId);
+            activeTabs.delete(tabId);
           }
         });
       }, 5000); // Check every 5 seconds
+    }
+  
+    handleStorageChange(changes, area) {
+      if (area === 'local' && changes.openaiApiKey) {
+        this.apiKey = changes.openaiApiKey.newValue;
+        console.log('[Service Worker] OpenAI API key updated.');
+        if (this.apiKey) {
+          this.showNotification('API Key Updated', 'Your OpenAI API key has been successfully updated.');
+        }
+      }
+    }
+  
+    async handleTabRemoval(tabId) {
+      if (activeTabs.has(tabId)) {
+        console.log(`Tab ${tabId} closed, cleaning up.`);
+        await this.stopCapture(tabId, true);
+      }
+    }
+  
+    async toggleCapture(tab) {
+      if (!tab.id) return;
+  
+      if (activeTabs.has(tab.id)) {
+        await this.stopCapture(tab.id);
+      } else {
+        await this.startCapture(tab);
+      }
+    }
+  
+    async startCapture(tab) {
+      if (!this.apiKey) {
+        this.showNotification('API Key Missing', 'Please set your OpenAI API key in options.');
+        return;
+      }
+      if (tab.url?.startsWith('chrome://')) {
+          this.showNotification('Capture Failed', 'Cannot capture internal Chrome pages.');
+          return;
+      }
+  
+      await setupOffscreenDocument();
+  
+      try {
+          const streamId = await chrome.tabCapture.getMediaStreamId({
+              targetTabId: tab.id,
+          });
+  
+          activeTabs.set(tab.id, { streamId });
+  
+          chrome.runtime.sendMessage({
+              type: 'start-recording',
+              target: 'offscreen',
+              streamId: streamId,
+              tabId: tab.id
+          });
+  
+          this.updateUiForTab(tab.id, true);
+  
+      } catch (error) {
+          console.error('Failed to start capture:', error);
+          this.showNotification('Capture Error', `Could not start audio capture: ${error.message}`);
+          await this.cleanup(tab.id);
+      }
+    }
+  
+    async stopCapture(tabId, tabIsClosing = false) {
+      if (!tabIsClosing) {
+        chrome.runtime.sendMessage({
+          type: 'stop-recording',
+          target: 'offscreen',
+        });
+      }
+      await this.cleanup(tabId);
+    }
+  
+    async cleanup(tabId) {
+      if (activeTabs.has(tabId)) {
+        activeTabs.delete(tabId);
+      }
+      this.updateUiForTab(tabId, false);
+    }
+  
+    updateUiForTab(tabId, isRecording) {
+      const iconPath = isRecording ? 'icons/icon48.png' : 'icons/icon128.png';
+      const badgeText = isRecording ? 'REC' : '';
+      chrome.action.setIcon({ tabId, path: iconPath });
+      chrome.action.setBadgeText({ tabId, text: badgeText });
+      if (isRecording) {
+        chrome.action.setBadgeBackgroundColor({ tabId, color: '#FF0000' });
+      }
     }
   
     async handleMessage(request, sender) {
@@ -112,8 +216,8 @@ class UserBufferManager {
   
     async processMessage(request, sender) {
       switch (request.type) {
-        case 'audioChunk':
-          this.handleAudioChunk(request);
+        case 'audio-blob':
+          this.handleAudioBlob(request);
           return { received: true };
   
         case 'startCapture':
@@ -124,7 +228,7 @@ class UserBufferManager {
             target: { tabId: request.tabId },
             files: ['dist/content.bundle.js']
           });
-          this.activeTabs.set(request.tabId, { 
+          activeTabs.set(request.tabId, { 
             streams: 0,
             lastHeartbeat: Date.now()
           });
@@ -132,20 +236,20 @@ class UserBufferManager {
         
         case 'stopCapture':
           await chrome.tabs.sendMessage(request.tabId, { type: 'stopCapture' });
-          this.activeTabs.delete(request.tabId);
+          activeTabs.delete(request.tabId);
           return { stopped: true };
   
         case 'heartbeat':
-          if (this.activeTabs.has(sender.tab.id)) {
-            const status = this.activeTabs.get(sender.tab.id);
+          if (activeTabs.has(sender.tab.id)) {
+            const status = activeTabs.get(sender.tab.id);
             status.lastHeartbeat = Date.now();
             status.streams = request.data.streamCount;
-            this.activeTabs.set(sender.tab.id, status);
+            activeTabs.set(sender.tab.id, status);
           }
           return { received: true };
   
         case 'getStatus':
-          const status = this.activeTabs.get(request.tabId);
+          const status = activeTabs.get(request.tabId);
           return status ? { 
             isActive: true, 
             streams: status.streams 
@@ -165,7 +269,7 @@ class UserBufferManager {
       });
     }
   
-    handleAudioChunk(request) {
+    handleAudioBlob(request) {
       const { userId, chunk } = request;
       if (!this.userBuffers.has(userId)) {
         this.userBuffers.set(userId, new UserBufferManager(userId, this.config));
@@ -261,7 +365,7 @@ class UserBufferManager {
     
     sendTranscription(transcription, userId) {
       // Find the tab ID for this user
-      const tabId = Array.from(this.activeTabs.entries())
+      const tabId = Array.from(activeTabs.entries())
         .find(([_, status]) => status.userId === userId)?.[0];
   
       if (tabId) {
@@ -311,6 +415,45 @@ class UserBufferManager {
       
       return new Blob([buffer], { type: 'audio/wav' });
     }
+
+    handleMessageFromOffscreen(request, sender) {
+        // We only care about messages from our offscreen document
+        if (sender.url?.endsWith('offscreen.html')) {
+            if (request.type === 'audio-blob') {
+                this.transcribeAudio(request.data.blob, request.data.tabId);
+            }
+        }
+    }
+
+    async transcribeAudio(audioBlob, tabId) {
+        if (!this.apiKey) {
+            this.showNotification('Transcription Failed', 'OpenAI API key is not set.');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', audioBlob, 'audio.webm');
+        formData.append('model', 'whisper-1');
+        formData.append('language', 'en-US');
+
+        const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${this.apiKey}`
+            },
+            body: formData
+        });
+
+        if (!response.ok) {
+            throw new Error(`API request failed: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        if (result.text && result.text.trim()) {
+            console.log(`[Tab: ${tabId}] Transcription: `, result.text);
+            this.showNotification('Transcription Received', result.text.trim());
+        }
+    }
   }
   
   // Add click handler for extension icon
@@ -343,4 +486,3 @@ class UserBufferManager {
   });
 
   const vtfService = new VTFTranscriptionService();
-  vtfService.init();
