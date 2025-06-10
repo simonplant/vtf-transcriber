@@ -1,209 +1,139 @@
-// Service Worker Lifecycle Events
-self.addEventListener('install', (event) => {
-  console.log('VTF Service Worker Installing...');
-  // Skip waiting to ensure we get the latest version
-  self.skipWaiting();
-});
+// ===================================================================================
+//
+// VTF Audio Transcriber - Background Service Worker
+//
+// ===================================================================================
 
-self.addEventListener('activate', (event) => {
-  console.log('VTF Service Worker Activated');
-  // Claim clients to ensure we control all pages
-  event.waitUntil(clients.claim());
-});
+// --- Constants and State Management ---
 
-// Debug logging function with timestamp
-function debugLog(message, data = null) {
-  chrome.storage.local.get({ debugMode: false }, (items) => {
-    if (items.debugMode) {
-      const timestamp = new Date().toISOString();
-      const logMessage = `[VTF ${timestamp}] ${message}`;
-      console.log(logMessage, data || '');
-      
-      // Forward log to content script if we have an active tab
-      if (activeTabId) {
-        chrome.tabs.sendMessage(activeTabId, {
-          type: 'log',
-          message: logMessage,
-          data: data
-        }).catch(() => {
-          // Ignore errors if content script isn't ready
-        });
-      }
-    }
-  });
+const DEBUG = true; // Set to true to enable detailed console logging
+
+// The single source of truth for the extension's state.
+let state = {
+  apiKey: '',
+  captureState: 'inactive', // 'inactive', 'active', 'error'
+  transcriptionState: 'inactive', // 'inactive', 'transcribing', 'error'
+  activeTabId: null,
+  stats: {
+    totalDuration: 0,
+    totalTranscriptions: 0,
+    errorCount: 0
+  }
+};
+
+// Simple logger that respects the DEBUG flag.
+const log = (...args) => {
+  if (DEBUG) {
+    console.log('[VTF BG]', ...args);
+  }
+};
+
+// Updates the state in memory, persists it to storage, and notifies listeners.
+async function setState(newState) {
+  Object.assign(state, newState);
+  await chrome.storage.local.set({ appState: state });
+  log('State updated:', state);
+  // Notify the popup of the change
+  chrome.runtime.sendMessage({ type: 'stateUpdate', data: state }).catch(() => log('Popup not open.'));
 }
 
-// Initialize state with persistence
-let activeTabId = null;
+// --- Initialization ---
 
-// Load persisted state on startup
-async function loadPersistedState() {
-  try {
-    const { persistedTabId } = await chrome.storage.local.get('persistedTabId');
-    if (persistedTabId) {
-      activeTabId = persistedTabId;
-      debugLog('Restored persisted tab ID:', activeTabId);
-    }
-  } catch (error) {
-    debugLog('Failed to load persisted state:', error);
+// Loads the state from storage when the extension starts.
+async function initializeState() {
+  const { appState } = await chrome.storage.local.get('appState');
+  if (appState) {
+    // Merge stored state with default, in case new properties were added
+    Object.assign(state, appState);
+    // Reset transient states
+    state.captureState = 'inactive';
+    state.transcriptionState = 'inactive';
+    state.activeTabId = null;
   }
+  // Persist the potentially cleaned state
+  await setState(state);
+  log('Initial state loaded.', state);
 }
 
-// Save state when it changes
-async function saveState() {
-  try {
-    await chrome.storage.local.set({
-      persistedTabId: activeTabId,
-      captureState: activeTabId ? 'active' : 'inactive',
-      lastUpdate: new Date().toISOString()
-    });
-  } catch (error) {
-    debugLog('Failed to save state:', error);
-  }
-}
+chrome.runtime.onStartup.addListener(initializeState);
+chrome.runtime.onInstalled.addListener(initializeState);
 
-// Extension Lifecycle Events
-chrome.runtime.onStartup.addListener(async () => {
-  console.log('VTF Extension Started');
-  await loadPersistedState();
-  // Clear any stale session state, but preserve stats
-  await chrome.storage.local.set({
-    captureState: 'inactive',
-    transcriptionState: 'inactive'
-  });
-});
+// --- Core Logic: Capture and Transcription ---
 
-chrome.runtime.onInstalled.addListener(async () => {
-  console.log('VTF Extension Installed/Updated');
-  await loadPersistedState();
-  // Clear any stale state
-  await chrome.storage.local.set({
-    captureState: 'inactive',
-    transcriptionState: 'inactive',
-    stats: { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 },
-    lastUpdate: 'Never'
-  });
-});
-
-// Check for pending actions on startup
-chrome.runtime.onStartup.addListener(async () => {
-  debugLog('Extension starting up, checking for pending actions...');
-  const { pendingAction } = await chrome.storage.local.get('pendingAction');
-  if (pendingAction) {
-    debugLog('Found pending action:', pendingAction);
-    await handlePendingAction(pendingAction);
-  }
-});
-
-// --- Offscreen Document Management ---
-let offscreenDocument = null;
-
-async function hasOffscreenDocument() {
-  if (chrome.runtime.getContexts) {
-    const existingContexts = await chrome.runtime.getContexts({
-      contextTypes: ['OFFSCREEN_DOCUMENT']
-    });
-    const doc = existingContexts.find(c => c.documentUrl?.endsWith('offscreen.html'));
-    if (doc) {
-      offscreenDocument = doc;
-      debugLog('Found existing offscreen document:', doc.documentUrl);
-      return true;
-    }
-  }
-  return false;
-}
-
-async function setupOffscreenDocument() {
-  debugLog('Setting up offscreen document...');
-  try {
-    // Check if we already have an offscreen document
-    const existingContexts = await chrome.runtime.getContexts({
-      contextTypes: ['OFFSCREEN_DOCUMENT']
-    });
-    
-    const existingOffscreen = existingContexts.find(
-      context => context.documentUrl?.endsWith('offscreen.html')
-    );
-
-    if (existingOffscreen) {
-      debugLog('Offscreen document already exists');
-      return;
-    }
-
-    // Create the offscreen document
-    await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['AUDIO_CAPTURE'],
-      justification: 'Recording tab audio for transcription.'
-    });
-
-    debugLog('Offscreen document created successfully');
-
-    // Wait for initialization
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Offscreen document initialization timeout'));
-      }, 5000);
-
-      const listener = (message) => {
-        if (message.type === 'offscreen-ready') {
-          clearTimeout(timeout);
-          chrome.runtime.onMessage.removeListener(listener);
-          resolve();
-        } else if (message.type === 'offscreen-error') {
-          clearTimeout(timeout);
-          chrome.runtime.onMessage.removeListener(listener);
-          reject(new Error(message.error));
-        }
-      };
-
-      chrome.runtime.onMessage.addListener(listener);
-    });
-  } catch (error) {
-    debugLog('Failed to create offscreen document:', error);
-    throw error;
-  }
-}
-
-// --- Transcription Logic ---
-async function transcribeAudio(audioBlob) {
-  debugLog('Starting audio transcription...');
-  const { apiKey } = await chrome.storage.local.get('apiKey');
-  if (!apiKey) {
-    debugLog('Transcription failed: API key missing');
-    showNotification('API Key Missing', 'Please set your OpenAI API key in the extension options.');
+async function startCapture(tabId) {
+  log('Attempting to start capture...');
+  if (state.activeTabId) {
+    log('Capture already active.');
     return;
   }
 
   try {
-    debugLog('Preparing audio data for transcription');
-    const formData = new FormData();
+    // 1. Setup and create the offscreen document
+    await setupOffscreenDocument('offscreen.html');
     
-    // Ensure we have a proper Blob with the correct MIME type
-    if (!(audioBlob instanceof Blob)) {
-      debugLog('Converting audio data to Blob');
-      audioBlob = new Blob([audioBlob], { type: 'audio/webm;codecs=opus' });
-    }
+    // 2. Get a media stream from the tab
+    const stream = await chrome.tabCapture.capture({ audio: true, video: false });
 
-    // Check file size (Whisper API limit is 25MB)
-    if (audioBlob.size > 25 * 1024 * 1024) {
-      throw new Error('Audio file too large. Maximum size is 25MB.');
-    }
-    
-    // Use .webm extension to match the MIME type
+    // 3. Send the stream to the offscreen document to start recording
+    await chrome.runtime.sendMessage({
+      type: 'start-recording',
+      target: 'offscreen',
+      stream: stream
+    });
+
+    // 4. Update our state
+    await setState({ captureState: 'active', activeTabId: tabId });
+    updateIcon();
+    log('Capture started successfully for tab:', tabId);
+
+  } catch (error) {
+    log('Error starting capture:', error.message);
+    await setState({ captureState: 'error', activeTabId: null });
+    updateIcon();
+    await cleanupOffscreenDocument();
+  }
+}
+
+async function stopCapture() {
+  log('Attempting to stop capture...');
+  if (!state.activeTabId) {
+    log('No active capture to stop.');
+    return;
+  }
+
+  try {
+    // Tell the offscreen document to stop recording.
+    await chrome.runtime.sendMessage({ type: 'stop-recording', target: 'offscreen' });
+  } catch(e) {
+    log("Could not communicate with offscreen doc to stop, will close it.", e.message);
+  } finally {
+    // Always clean up the state and offscreen document
+    await cleanupOffscreenDocument();
+    await setState({ captureState: 'inactive', transcriptionState: 'inactive', activeTabId: null });
+    updateIcon();
+    log('Capture stopped and cleaned up.');
+  }
+}
+
+async function transcribeAudio(audioBlob) {
+  log(`Transcribing audio chunk of size ${audioBlob.size}...`);
+  if (!state.apiKey) {
+    log('Transcription failed: API key missing');
+    showNotification('API Key Missing', 'Please set your OpenAI API key in the options.');
+    await setState({ transcriptionState: 'error', stats: { ...state.stats, errorCount: state.stats.errorCount + 1 } });
+    return;
+  }
+  
+  await setState({ transcriptionState: 'transcribing' });
+  
+  try {
+    const formData = new FormData();
     formData.append('file', audioBlob, 'audio.webm');
     formData.append('model', 'whisper-1');
-    formData.append('language', 'en');
-    formData.append('response_format', 'json');
-
-    debugLog('Sending audio to OpenAI API...', { 
-      size: `${(audioBlob.size / 1024 / 1024).toFixed(2)}MB`,
-      type: audioBlob.type
-    });
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'Authorization': `Bearer ${state.apiKey}` },
       body: formData
     });
 
@@ -213,226 +143,68 @@ async function transcribeAudio(audioBlob) {
     }
 
     const result = await response.json();
-    debugLog('Transcription received:', { text: result.text?.trim() });
-    
+    log('Transcription received:', result.text);
+
     if (result.text && result.text.trim()) {
-      // Show notification
       showNotification('Transcription Received', result.text.trim());
-      
-      // Send to popup if it's open
-      chrome.runtime.sendMessage({
-        type: 'transcription',
-        text: result.text.trim()
-      }).catch(() => {
-        // Ignore errors if popup isn't open
+      await setState({
+        transcriptionState: 'inactive',
+        stats: {
+          ...state.stats,
+          totalTranscriptions: state.stats.totalTranscriptions + 1,
+          totalDuration: state.stats.totalDuration + 10 // Chunks are 10s
+        }
       });
     } else {
-      throw new Error('No transcription text received');
+      throw new Error('No transcription text received from API.');
     }
   } catch (error) {
-    debugLog('Transcription failed:', error);
+    log('Transcription failed:', error.message);
     showNotification('Transcription Failed', error.message);
+    await setState({
+      transcriptionState: 'error',
+      stats: { ...state.stats, errorCount: state.stats.errorCount + 1 }
+    });
   }
 }
 
-// --- Main Event Listener ---
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  debugLog('Received message:', { type: request.type, sender: sender.url });
-  
-  switch (request.type) {
-    case 'log':
-      // Forward log messages to the main console
-      console.log(request.message, request.data || '');
-      sendResponse({ status: 'ok' });
-      break;
+// --- Offscreen Document Management ---
 
-    case 'start-capture':
-      debugLog('Processing start-capture request');
-      chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-        if (tabs.length === 0) {
-          debugLog('Start capture failed: No active tab found');
-          sendResponse({ status: 'error', error: 'No active tab found' });
-          return;
-        }
-        try {
-          await startCapture(tabs[0].id);
-          debugLog('Capture started successfully');
-          sendResponse({ status: 'started' });
-        } catch (error) {
-          debugLog('Start capture failed:', error);
-          sendResponse({ status: 'error', error: error.message });
-        }
-      });
-      return true; // Keep message channel open for async response
-
-    case 'stop-capture':
-      debugLog('Processing stop-capture request');
-      stopCapture().then(() => {
-        debugLog('Capture stopped successfully');
-        sendResponse({ status: 'stopped' });
-      }).catch(error => {
-        debugLog('Stop capture failed:', error);
-        sendResponse({ status: 'error', error: error.message });
-      });
-      return true; // Keep message channel open for async response
-
-    case 'get-status':
-      debugLog('Processing get-status request');
-      chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-        if (chrome.runtime.lastError) {
-          debugLog('Error querying tabs:', chrome.runtime.lastError.message);
-          sendResponse({ isActive: false, offscreenStatus: 'error' });
-          return;
-        }
-        
-        if (tabs.length === 0) {
-          debugLog('Status check failed: No active tab found');
-          sendResponse({ isActive: false, offscreenStatus: 'inactive' });
-          return;
-        }
-
-        const isActive = activeTabId === tabs[0].id;
-        debugLog('Status check result:', { isActive, activeTabId, currentTabId: tabs[0].id });
-
-        // Check offscreen document status robustly
-        try {
-          const existingContexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
-          if (existingContexts.length > 0) {
-            // It exists, so we can query it
-            const offscreenStatus = await chrome.runtime.sendMessage({ type: 'check-status' });
-            sendResponse({
-              isActive,
-              offscreenStatus: offscreenStatus?.status || 'inactive',
-              isRecording: offscreenStatus?.isRecording || false
-            });
-          } else {
-            // It does not exist, which is a normal state before capture
-            sendResponse({
-              isActive,
-              offscreenStatus: 'inactive',
-              isRecording: false
-            });
-          }
-        } catch (error) {
-          debugLog('Error checking offscreen status:', error);
-          // If messaging fails, it could be because the document is closing.
-          // This is not a critical extension error, but a transient state.
-          sendResponse({
-            isActive,
-            offscreenStatus: 'inactive',
-            isRecording: false
-          });
-        }
-      });
-      return true; // Keep message channel open for async response
-
-    case 'audio-blob':
-      debugLog('Received audio blob from offscreen document');
-      if (sender.url?.endsWith('offscreen.html')) {
-        transcribeAudio(request.data.blob);
-        sendResponse({ status: 'ok' });
-      } else {
-        debugLog('Warning: Received audio blob from unexpected source:', sender.url);
-        sendResponse({ status: 'error', error: 'Invalid sender' });
-      }
-      break;
-
-    case 'recording-error':
-      debugLog('Recording error from offscreen document:', request.error);
-      showNotification('Recording Error', request.error);
-      // Update state to reflect the error
-      activeTabId = null;
-      saveState().then(() => {
-        updateIcon(false);
-        // Notify popup if it's open
-        chrome.runtime.sendMessage({
-          type: 'stateUpdate',
-          captureState: 'error'
-        }).catch(() => {
-          // Ignore errors if popup isn't open
-        });
-        sendResponse({ status: 'ok' });
-      }).catch(error => {
-        debugLog('Failed to save state:', error);
-        sendResponse({ status: 'error', error: error.message });
-      });
-      return true; // Keep message channel open for async response
+async function setupOffscreenDocument(path) {
+  const existingContexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+  if (existingContexts.find(c => c.documentUrl.endsWith(path))) {
+    log('Offscreen document already exists.');
+    return;
   }
-});
-
-// --- Capture Control Functions ---
-async function startCapture(tabId) {
-  debugLog('Starting capture for tab:', tabId);
-  try {
-    // Ensure offscreen document is ready
-    await setupOffscreenDocument();
-
-    // Get tab capture stream
-    const stream = await chrome.tabCapture.capture({
-      audio: true,
-      video: false
-    });
-
-    if (!stream) {
-      throw new Error('Failed to capture tab audio');
-    }
-
-    // Start recording in offscreen document
-    await chrome.runtime.sendMessage({
-      type: 'start-recording',
-      stream: stream
-    });
-
-    // Update state
-    activeTabId = tabId;
-    await saveState();
-    updateIcon(true);
-
-    debugLog('Capture started successfully');
-  } catch (error) {
-    debugLog('Failed to start capture:', error);
-    throw error;
-  }
+  await chrome.offscreen.createDocument({
+    url: path,
+    reasons: ['AUDIO_CAPTURE'],
+    justification: 'To record tab audio for transcription.'
+  });
+  log('Offscreen document created.');
 }
 
-async function stopCapture() {
-  debugLog('Stopping capture...');
-  try {
-    // Stop recording in offscreen document
-    await chrome.runtime.sendMessage({ type: 'stop-recording' });
-
-    // Close the offscreen document to release resources
+async function cleanupOffscreenDocument() {
+  const existingContexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+  if (existingContexts.length > 0) {
     await chrome.offscreen.closeDocument();
-    debugLog('Offscreen document closed.');
-
-    // Update state
-    activeTabId = null;
-    await saveState();
-    updateIcon(false);
-
-    debugLog('Capture stopped successfully');
-  } catch (error) {
-    debugLog('Failed to stop capture:', error);
-    // Even if there's an error, try to clean up state
-    activeTabId = null;
-    await saveState();
-    updateIcon(false);
-    throw error;
+    log('Offscreen document closed.');
   }
 }
 
-function updateIcon(isRecording) {
-  debugLog('Updating icon state:', { isRecording });
-  // Use the same icon for both states since we don't have an active version
-  const iconPath = 'icons/icon48.png';
+// --- UI Helpers ---
+
+function updateIcon() {
+  const isRecording = state.captureState === 'active';
+  const iconPath = `icons/icon48${isRecording ? '-active' : ''}.png`;
   const badgeText = isRecording ? 'REC' : '';
-  chrome.action.setIcon({ path: iconPath });
+  
+  chrome.action.setIcon({ path: { "48": iconPath } });
   chrome.action.setBadgeText({ text: badgeText });
   chrome.action.setBadgeBackgroundColor({ color: '#FF0000' });
 }
 
 function showNotification(title, message) {
-  debugLog('Showing notification:', { title, message });
   chrome.notifications.create({
     type: 'basic',
     iconUrl: 'icons/icon128.png',
@@ -442,34 +214,39 @@ function showNotification(title, message) {
   });
 }
 
-// Ensure cleanup if the recorded tab is closed
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === activeTabId) {
-    debugLog('Active tab closed, stopping capture:', { tabId });
+// --- Event Listeners ---
+
+// Main message handler for requests from other parts of the extension
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  log('Received message:', request.type, 'from', sender.url?.split('/').pop());
+
+  // Use a handler map for clean, async routing
+  const handlers = {
+    'start-capture': () => chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => startCapture(tabs[0].id)),
+    'stop-capture': stopCapture,
+    'get-status': () => sendResponse(state),
+    'audio-blob': () => transcribeAudio(request.data.blob),
+    'recording-error': () => {
+      log('Received recording error:', request.error);
+      showNotification('Recording Error', request.error);
+      stopCapture(); // Treat recording error as a trigger to stop
+    },
+    'options-updated': initializeState // Re-load state if options change
+  };
+
+  const handler = handlers[request.type];
+  if (handler) {
+    handler().catch(e => log(`Error in '${request.type}' handler:`, e.message));
+    // Return true to indicate we will respond asynchronously for get-status
+    return request.type === 'get-status'; 
+  }
+  return false;
+});
+
+// Stop capture if the recorded tab is closed
+chrome.tabs.onRemoved.addListener(tabId => {
+  if (tabId === state.activeTabId) {
+    log('Active tab closed, stopping capture.');
     stopCapture();
   }
 });
-
-// Handle pending actions
-async function handlePendingAction(action) {
-  debugLog('Handling pending action:', action);
-  try {
-    switch (action) {
-      case 'start-capture':
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tabs.length > 0) {
-          await startCapture(tabs[0].id);
-        }
-        break;
-      case 'stop-capture':
-        await stopCapture();
-        break;
-    }
-    // Clear the pending action
-    await chrome.storage.local.remove('pendingAction');
-  } catch (error) {
-    debugLog('Error handling pending action:', error);
-    // Clear the pending action even if it failed
-    await chrome.storage.local.remove('pendingAction');
-  }
-}

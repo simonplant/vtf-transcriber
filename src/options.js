@@ -1,82 +1,82 @@
-// Default settings
-const defaultSettings = {
-    apiKey: '',
-    debugMode: false
-};
+// ===================================================================================
+//
+// VTF Audio Transcriber - Options Page Logic
+//
+// ===================================================================================
 
-// Simple debug logging function
-function debugLog(...args) {
-    chrome.storage.local.get({ debugMode: false }, (items) => {
-        if (items.debugMode) {
-            console.log('[VTF DEBUG]', ...args);
-        }
-    });
-}
+const log = (...args) => console.log('[VTF Options]', ...args);
 
-// Get UI elements
+// --- DOM Elements ---
 const apiKeyInput = document.getElementById('apiKey');
 const debugModeCheckbox = document.getElementById('debugMode');
 const saveButton = document.getElementById('save');
 const statusElement = document.getElementById('status');
 
-// Load saved settings
+// --- Functions ---
+
+// Load settings from storage and display them.
 async function loadOptions() {
-    try {
-        const data = await chrome.storage.local.get(['apiKey', 'debugMode']);
-        
-        // Set API key placeholder if it exists
-        if (data.apiKey) {
-            apiKeyInput.placeholder = "API Key is set. Enter a new key to change it.";
-        }
-        
-        // Set debug mode checkbox
-        debugModeCheckbox.checked = data.debugMode || false;
-        
-        debugLog('Options loaded:', data);
-    } catch (error) {
-        console.error('Failed to load options:', error);
-        showStatus('Failed to load settings', 'warning');
+  log('Loading options...');
+  try {
+    const { appState } = await chrome.storage.local.get('appState');
+    if (appState) {
+      log('Found existing state:', appState);
+      if (appState.apiKey) {
+        apiKeyInput.placeholder = "API Key is set. Enter a new key to overwrite.";
+      } else {
+        apiKeyInput.placeholder = "Enter your OpenAI API Key";
+      }
+      debugModeCheckbox.checked = appState.debugMode || false;
     }
+  } catch (error) {
+    log('Error loading options:', error);
+    showStatus(`Error: ${error.message}`, 'error');
+  }
 }
 
-// Save settings
+// Save the current settings from the UI to storage.
 async function saveOptions() {
-    try {
-        const settings = {
-            apiKey: apiKeyInput.value || (await chrome.storage.local.get('apiKey')).apiKey,
-            debugMode: debugModeCheckbox.checked
-        };
+  log('Saving options...');
+  try {
+    const { appState } = await chrome.storage.local.get('appState');
+    const newApiKey = apiKeyInput.value.trim();
 
-        // Only save if we have an API key
-        if (!settings.apiKey) {
-            showStatus('Please enter an API key to save.', 'warning');
-            return;
-        }
+    // Update state object
+    const newState = {
+      ...appState,
+      debugMode: debugModeCheckbox.checked
+    };
 
-        await chrome.storage.local.set(settings);
-        
-        // Clear the API key input but keep the value in storage
-        apiKeyInput.value = '';
-        apiKeyInput.placeholder = "API Key is set. Enter a new key to change it.";
-        
-        showStatus('Settings saved successfully!', 'success');
-        debugLog('Settings saved:', { ...settings, apiKey: '***' });
-    } catch (error) {
-        console.error('Failed to save options:', error);
-        showStatus('Failed to save settings', 'warning');
+    if (newApiKey) {
+      newState.apiKey = newApiKey;
     }
+    
+    await chrome.storage.local.set({ appState: newState });
+    
+    // Notify background script that state has changed
+    await chrome.runtime.sendMessage({ type: 'options-updated' });
+
+    // Clear input for security and show success
+    apiKeyInput.value = '';
+    showStatus('Settings saved successfully!', 'success');
+    loadOptions(); // Re-load to update placeholder text
+    
+  } catch (error) {
+    log('Error saving options:', error);
+    showStatus(`Error: ${error.message}`, 'error');
+  }
 }
 
-// Show status message
+// Show a temporary status message to the user.
 function showStatus(message, type = 'success') {
-    statusElement.textContent = message;
-    statusElement.className = `status ${type}`;
-    setTimeout(() => { 
-        statusElement.textContent = '';
-        statusElement.className = 'status';
-    }, 3000);
+  statusElement.textContent = message;
+  statusElement.className = `status ${type}`;
+  setTimeout(() => {
+    statusElement.textContent = '';
+    statusElement.className = 'status';
+  }, 3000);
 }
 
-// Initialize
+// --- Initialization ---
 document.addEventListener('DOMContentLoaded', loadOptions);
 saveButton.addEventListener('click', saveOptions); 
