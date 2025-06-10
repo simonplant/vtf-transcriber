@@ -2,31 +2,27 @@
     "manifest_version": 3,
     "name": "VTF Audio Transcriber",
     "version": "0.7.0",
-    "description": "Captures and transcribes audio from the VTF platform using a direct stream integration.",
+    "description": "Captures and transcribes audio from a tab using the tabCapture API.",
     
-    "options_page": "dist/options.html",
+    "options_page": "options.html",
     
     "permissions": [
       "storage",     
-      "activeTab", 
-      "scripting",
       "notifications",
       "tabCapture",
       "offscreen"
     ],
     
-
     "host_permissions": [
-      "*://vtf.t3live.com/*", 
       "https://api.openai.com/*"
     ],
     
     "background": {
-      "service_worker": "dist/background.js"
+      "service_worker": "background.js"
     },
     
     "action": {
-      "default_popup": "dist/popup.html",
+      "default_popup": "popup.html",
       "default_icon": {
         "16": "icons/icon16.png",
         "48": "icons/icon48.png",
@@ -34,18 +30,9 @@
       }
     },
     
-    "web_accessible_resources": [
-      {
-        "resources": [
-          "dist/audio-worklet.js",
-          "dist/content.bundle.js"
-        ],
-        "matches": ["*://vtf.t3live.com/*"]
-      }
-    ],
-
     "offscreen": {
       "reasons": ["USER_MEDIA"],
       "justification": "Recording tab audio for transcription"
     }
-  }
+}
+  

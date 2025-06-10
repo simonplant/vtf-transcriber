@@ -9,10 +9,9 @@ async function handleMessages(message) {
   if (message.target !== 'offscreen') {
     return;
   }
-
   switch (message.type) {
     case 'start-recording':
-      await startRecording(message.streamId, message.tabId);
+      await startRecording(message.streamId);
       break;
     case 'stop-recording':
       await stopRecording();
@@ -22,7 +21,7 @@ async function handleMessages(message) {
   }
 }
 
-async function startRecording(streamId, tabId) {
+async function startRecording(streamId) {
   if (mediaRecorder?.state === 'recording') {
     console.warn('Recording is already in progress.');
     return;
@@ -39,10 +38,6 @@ async function startRecording(streamId, tabId) {
       video: false,
     });
 
-    const output = new AudioContext();
-    const source = output.createMediaStreamSource(media);
-    source.connect(output.destination);
-
     recordingStream = media;
 
     const options = { mimeType: 'audio/webm;codecs=opus' };
@@ -50,23 +45,18 @@ async function startRecording(streamId, tabId) {
 
     mediaRecorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
-        // Send the blob to the service worker for transcription
+        // Send the audio blob back to the service worker for transcription
         chrome.runtime.sendMessage({
             type: 'audio-blob',
             target: 'service-worker',
-            data: {
-                blob: event.data,
-                tabId: tabId 
-            }
+            data: { blob: event.data }
         });
       }
     };
 
-    mediaRecorder.onstop = () => {
-      cleanup();
-    };
-
-    mediaRecorder.start(5000); // Create a chunk every 5 seconds for faster transcription
+    mediaRecorder.onstop = cleanup;
+    // Create a chunk every 5 seconds for faster transcription turnaround
+    mediaRecorder.start(5000); 
 
     console.log('Offscreen recording started.');
   } catch (error) {

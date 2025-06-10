@@ -1,15 +1,15 @@
-# Manifest.json Documentation
+# Manifest Configuration
 
-This document describes the configuration and permissions used in the VTF Transcriber Chrome extension.
+The `manifest.json` file defines the core configuration and permissions for the VTF Audio Transcriber Chrome extension.
 
-## Extension Metadata
+## Basic Information
 
 ```json
 {
-    "manifest_version": 3,
-    "name": "VTF Audio Transcriber",
-    "version": "0.7.0",
-    "description": "Captures and transcribes audio from the VTF platform using a direct stream integration."
+  "manifest_version": 3,
+  "name": "VTF Audio Transcriber",
+  "version": "0.7.0",
+  "description": "Captures and transcribes audio from browser tabs using the tabCapture API"
 }
 ```
 
@@ -17,44 +17,81 @@ This document describes the configuration and permissions used in the VTF Transc
 
 The extension requires the following permissions:
 
-- `storage`: Used for saving user preferences and settings
-- `activeTab`: Required for accessing the current tab's content
-- `scripting`: Required for injecting content scripts
-- `notifications`: Used for showing transcription status updates
+- `storage`: For saving user preferences and API keys
+- `notifications`: For displaying transcription results
+- `tabCapture`: For capturing audio from browser tabs
+- `offscreen`: For handling audio recording in a separate context
 
-## Host Permissions
+## Components
 
-The extension requires access to:
+### Background Service Worker
+```json
+{
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}
+```
+The service worker manages the tab capture process and communicates with the offscreen document.
 
-- `*://vtf.t3live.com/*`: For accessing the VTF platform
-- `https://api.openai.com/*`: For accessing the Whisper API
+### User Interface
+```json
+{
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}
+```
+The popup provides controls for starting and stopping recording.
 
-## Background Service Worker
+### Options Page
+```json
+{
+  "options_page": "options.html"
+}
+```
+The options page allows users to configure API keys and other settings.
 
-The extension uses a background service worker (`dist/background.js`) to handle:
-- Extension events
-- State management
-- Communication between components
+### Offscreen Document
+```json
+{
+  "offscreen": {
+    "page": "offscreen.html",
+    "reason": "AUDIO_CAPTURE"
+  }
+}
+```
+The offscreen document handles audio recording and processing.
 
-## Extension UI
+## Icons
 
-The extension provides:
-- A popup interface (`dist/popup.html`) for quick access to controls
-- Icons in multiple sizes (16px, 48px, 128px) for various contexts
+The extension uses the following icon sizes:
+- 16x16: Used in the extension management page
+- 32x32: Used in Windows taskbar
+- 48x48: Used in the Chrome Web Store
+- 128x128: Used in the Chrome Web Store and installation
 
-## Web Accessible Resources
+## API Access
 
-The following resources are made accessible to web pages:
+The extension requires access to the OpenAI API:
+```json
+{
+  "host_permissions": [
+    "https://api.openai.com/*"
+  ]
+}
+```
 
-- `dist/audio-worklet.js`: Audio processing worker for handling audio streams
-- `dist/content.bundle.js`: Content script bundle for page integration
+## Security Considerations
 
-These resources are only accessible on the VTF platform (`*://vtf.t3live.com/*`).
-
-## Options Page
-
-The extension includes an options page (`dist/options.html`) for:
-- API key configuration
-- Language settings
-- Duration limits
-- Other user preferences 
+1. The extension uses Manifest V3 for enhanced security
+2. API keys are stored securely in Chrome's storage
+3. No code is injected into target pages
+4. Audio capture is handled in an isolated offscreen context 

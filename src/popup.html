@@ -1,20 +1,45 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>VTF Control</title>
+  <title>VTF Audio Transcriber</title>
   <style>
-    body { font-family: sans-serif; width: 250px; text-align: center; }
-    button { width: 80%; padding: 12px; font-size: 16px; cursor: pointer; }
-    #start { background-color: #4CAF50; color: white; }
-    #stop { background-color: #f44336; color: white; display: none; }
-    #status { margin-top: 15px; font-size: 14px; }
+    body {
+      width: 300px;
+      padding: 10px;
+      font-family: Arial, sans-serif;
+    }
+    button {
+      width: 100%;
+      padding: 8px;
+      margin: 5px 0;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button#stop {
+      background-color: #f44336;
+    }
+    button#stop:hover {
+      background-color: #da190b;
+    }
+    #status {
+      margin: 10px 0;
+      padding: 5px;
+      text-align: center;
+      color: #666;
+    }
   </style>
 </head>
 <body>
-  <h3>VTF Transcription Control</h3>
-  <button id="start">Start Capture</button>
-  <button id="stop">Stop Capture</button>
-  <div id="status">Status: Inactive</div>
-  <script src="dist/popup.bundle.js"></script>
+  <h2>VTF Audio Transcriber</h2>
+  <div id="status">Status: Ready to start.</div>
+  <button id="start">Start Recording</button>
+  <button id="stop" style="display: none;">Stop Recording</button>
+  <script src="popup.js"></script>
 </body>
 </html>
