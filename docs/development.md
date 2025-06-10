@@ -109,15 +109,12 @@ src/
 
 ## Deployment
 
-1. Package the extension:
+1. Package the extension for Chrome Web Store:
    ```bash
-   make package
+   make dist
    ```
 
-2. The packaged extension will be in the `release` directory
-
-3. Submit to Chrome Web Store:
-   - Create a zip file of the contents
-   - Upload to the Chrome Web Store
+2. Submit to Chrome Web Store:
+   - Upload the generated package
    - Fill in store listing details
    - Submit for review 

@@ -31,7 +31,21 @@ A Chrome extension that captures and transcribes audio from browser tabs using t
 
 ## Development
 
-See the [Development Guide](docs/development.md) for information on setting up the development environment and contributing to the project.
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/simonplant/vtf-transcriber.git
+   cd vtf-transcriber
+   ```
+
+2. Load the extension in Chrome:
+   - Open Chrome and go to `chrome://extensions/`
+   - Enable "Developer mode"
+   - Click "Load unpacked" and select the `src` directory
+
+3. Make changes to the source files in the `src` directory
+4. The extension will automatically reload when you make changes
+
+For more detailed development information, see the [Development Guide](docs/development.md).
 
 ## Architecture
 
