@@ -38,22 +38,33 @@ async function startRecording(streamId) {
     }
 
     try {
-        const media = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                mandatory: {
-                    chromeMediaSource: 'tab',
-                    chromeMediaSourceId: streamId,
-                },
-            },
-            video: false,
+        // Use chrome.tabCapture.capture to get the audio stream
+        const stream = await new Promise((resolve, reject) => {
+            chrome.tabCapture.capture({
+                audio: true,
+                video: false,
+                audioConstraints: {
+                    mandatory: {
+                        chromeMediaSource: 'tab',
+                        chromeMediaSourceId: streamId
+                    }
+                }
+            }, (stream) => {
+                if (chrome.runtime.lastError) {
+                    reject(chrome.runtime.lastError);
+                } else {
+                    resolve(stream);
+                }
+            });
         });
 
-        recordingStream = media;
+        recordingStream = stream;
         
         // Configure MediaRecorder with optimal settings for Whisper API
         const options = {
             mimeType: 'audio/webm;codecs=opus',
-            audioBitsPerSecond: 128000 // 128kbps for good quality
+            audioBitsPerSecond: 64000, // 64kbps for mono Opus (optimal for Whisper)
+            sampleRate: 48000 // 48kHz is the default and ideal for Opus
         };
         
         mediaRecorder = new MediaRecorder(recordingStream, options);
@@ -82,6 +93,11 @@ async function startRecording(streamId) {
 
     } catch (error) {
         console.error('Error starting offscreen recording:', error);
+        // Notify the background script of the error
+        chrome.runtime.sendMessage({
+            type: 'recording-error',
+            error: error.message
+        });
     }
 }
 

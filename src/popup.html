@@ -1,45 +1,77 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>VTF Audio Transcriber</title>
+  <meta charset="UTF-8">
+  <title>VTF Audio Extension</title>
+  <link rel="stylesheet" href="style.css">
   <style>
-    body {
-      width: 300px;
-      padding: 10px;
-      font-family: Arial, sans-serif;
-    }
-    button {
-      width: 100%;
-      padding: 8px;
-      margin: 5px 0;
-      background-color: #4CAF50;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    button:hover {
-      background-color: #45a049;
-    }
-    button#stop {
-      background-color: #f44336;
-    }
-    button#stop:hover {
-      background-color: #da190b;
-    }
-    #status {
-      margin: 10px 0;
-      padding: 5px;
-      text-align: center;
-      color: #666;
-    }
+    /* You can put this in style.css if preferred */
+    body { font-family: system-ui, sans-serif; background: #f8f9fb; margin: 0; }
+    .popup-container { padding: 18px; width: 325px; }
+    .header h1 { font-size: 1.5em; margin-bottom: 0.5em; }
+    .status-section, .stats-section { margin-bottom: 1em; }
+    .status-section h2 { font-size: 1.1em; margin-bottom: 0.2em; }
+    .status-item, .stat-item { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .stat-item { flex-direction: column; align-items: flex-start; margin-right: 20px; }
+    .stat-label { color: #888; font-size: 0.8em; }
+    .stat-value { font-weight: bold; font-size: 1.15em; }
+    .button-container { display: flex; gap: 10px; margin-top: 12px; }
+    button { padding: 7px 16px; border-radius: 4px; border: none; background: #2455d1; color: #fff; cursor: pointer; font-size: 1em; }
+    button:disabled { background: #b3b3b3; cursor: default; }
+    #test-connection { background: #737373; }
   </style>
 </head>
 <body>
-  <h2>VTF Audio Transcriber</h2>
-  <div id="popupStatus">Status: Ready to start.</div>
-  <button id="start">Start Recording</button>
-  <button id="stop" style="display: none;">Stop Recording</button>
+  <div class="popup-container">
+    <div class="header">
+      <h1>VTF Audio</h1>
+    </div>
+
+    <div class="status-section" id="capture-status">
+      <h2>Capture Status</h2>
+      <div class="status-item">
+        <span>Status</span>
+        <span id="capture-state">Inactive</span>
+      </div>
+      <div class="status-item">
+        <span>Duration</span>
+        <span id="capture-duration">00:00</span>
+      </div>
+    </div>
+
+    <div class="status-section" id="transcription-status">
+      <h2>Transcription Status</h2>
+      <div class="status-item">
+        <span>Status</span>
+        <span id="transcription-state">Inactive</span>
+      </div>
+      <div class="status-item">
+        <span>Last Update</span>
+        <span id="last-update">Never</span>
+      </div>
+    </div>
+
+    <div class="stats-section" id="stats-section" style="display: flex; gap: 16px;">
+      <div class="stat-item">
+        <div class="stat-value" id="total-duration">0s</div>
+        <div class="stat-label">Total Duration</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="total-transcriptions">0</div>
+        <div class="stat-label">Transcriptions</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" id="error-count">0</div>
+        <div class="stat-label">Errors</div>
+      </div>
+    </div>
+
+    <div class="button-container">
+      <button id="start-capture">Start Capture</button>
+      <button id="stop-capture" disabled>Stop Capture</button>
+      <button id="test-connection">Test Connection</button>
+    </div>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

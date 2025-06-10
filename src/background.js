@@ -87,9 +87,6 @@ async function transcribeAudio(audioBlob) {
     if (!(audioBlob instanceof Blob)) {
       debugLog('Converting audio data to Blob');
       audioBlob = new Blob([audioBlob], { type: 'audio/webm;codecs=opus' });
-    } else if (audioBlob.type !== 'audio/webm;codecs=opus') {
-      debugLog('Converting audio blob to correct MIME type');
-      audioBlob = new Blob([audioBlob], { type: 'audio/webm;codecs=opus' });
     }
 
     // Check file size (Whisper API limit is 25MB)
@@ -123,7 +120,16 @@ async function transcribeAudio(audioBlob) {
     debugLog('Transcription received:', { text: result.text?.trim() });
     
     if (result.text && result.text.trim()) {
+      // Show notification
       showNotification('Transcription Received', result.text.trim());
+      
+      // Send to popup if it's open
+      chrome.runtime.sendMessage({
+        type: 'transcription',
+        text: result.text.trim()
+      }).catch(() => {
+        // Ignore errors if popup isn't open
+      });
     } else {
       throw new Error('No transcription text received');
     }
@@ -186,6 +192,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       } else {
         debugLog('Warning: Received audio blob from unexpected source:', sender.url);
       }
+      break;
+
+    case 'recording-error':
+      debugLog('Recording error from offscreen document:', request.error);
+      showNotification('Recording Error', request.error);
+      // Update state to reflect the error
+      chrome.storage.local.set({ captureState: 'error' });
+      // Notify popup if it's open
+      chrome.runtime.sendMessage({
+        type: 'stateUpdate',
+        captureState: 'error'
+      }).catch(() => {
+        // Ignore errors if popup isn't open
+      });
       break;
   }
   return true; // Keep message channel open for async response
