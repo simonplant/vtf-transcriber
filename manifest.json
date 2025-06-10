@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "VTF Audio Transcriber",
+  "version": "0.6.0",
+  "description": "Capture and transcribe audio from Virtual Trading Floor",
+  
+  "content_scripts": [{
+    "matches": ["*://vtf.t3live.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  
+  "host_permissions": [
+    "https://api.openai.com/*"
+  ],
+  
+  "background": {
+    "service_worker": "background.js"
+  },
+  
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  
+  "options_page": "options.html",
+  
+  "web_accessible_resources": [{
+    "resources": ["inject.js"],
+    "matches": ["*://vtf.t3live.com/*"]
+  }],
+  
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

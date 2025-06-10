@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="popup">
+  <div class="header">
+    <h1>VTF Audio Capture</h1>
+    <span class="status-indicator" id="statusIndicator"></span>
+  </div>
+  
+  <div class="controls">
+    <button id="startBtn" class="btn btn-primary">Start Capture</button>
+    <button id="stopBtn" class="btn btn-primary">Stop Capture</button>
+    <div class="btn-group">
+      <button id="testBtn" class="btn btn-secondary">Test Connection</button>
+      <button id="optionsBtn" class="btn btn-secondary">Options</button>
+    </div>
+  </div>
+  
+  <div class="info-section">
+    <div class="info-row">
+      <span class="info-label">Status:</span>
+      <span class="info-value" id="captureStatus">Not Capturing</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">API Key:</span>
+      <span class="info-value" id="apiKeyStatus">Checking...</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Audio Chunks:</span>
+      <span class="info-value" id="chunksCount">0</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Transcriptions:</span>
+      <span class="info-value" id="transcriptionCount">0</span>
+    </div>
+  </div>
+  
+  <div class="error-message hidden" id="errorMessage"></div>
+  <div class="success-message hidden" id="successMessage"></div>
+  
+  <div class="transcript-section">
+    <div class="transcript-header">
+      <h2>Recent Transcriptions</h2>
+    </div>
+    <div class="transcript-content" id="transcriptContent">
+      <div class="empty-state">No transcriptions yet. Start capturing to see results.</div>
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
