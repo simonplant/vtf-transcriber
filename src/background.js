@@ -1,15 +1,18 @@
 // ===================================================================================
 //
-// VTF Audio Transcriber - Background Service Worker
+// VTF Audio Transcriber - Background Service Worker (Final Scoped Architecture)
 //
 // ===================================================================================
+
+// The specific URL this extension is designed for.
+const VTF_URL_PATTERN = 'https://vtf.t3live.com/';
 
 // --- State Management ---
 let state = {
   apiKey: '',
   debugMode: false,
-  captureState: 'inactive', // 'inactive', 'active', 'error'
-  transcriptionState: 'inactive', // 'inactive', 'transcribing', 'error'
+  captureState: 'inactive',
+  transcriptionState: 'inactive',
   activeTabId: null,
   transcriptionLog: [],
   stats: { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 }
@@ -42,20 +45,14 @@ async function initializeState() {
   log('Initial state loaded.', state);
 }
 
-// *** THE PRIMARY FIX IS HERE ***
 async function startCapture(tab) {
   log(`Attempting to start capture for tab: ${tab.id}`);
 
-  // 1. ADDED GUARD: Check if the URL is a restricted page.
-  const url = tab.url;
-  if (!url || url.startsWith('chrome://') || url.startsWith('https://chrome.google.com')) {
-    const errorMsg = 'Cannot capture audio on this page. Please use on a standard website (http or https).';
+  // *** UPDATED GUARD: Now specifically checks for the correct site ***
+  if (!tab.url || !tab.url.startsWith(VTF_URL_PATTERN)) {
+    const errorMsg = 'This extension only works on the VTF platform.';
     log(errorMsg);
-    const newLogEntry = { timestamp: new Date().toISOString(), text: errorMsg, speaker: 'System' };
-    await setState({ 
-      captureState: 'error', 
-      transcriptionLog: [newLogEntry] 
-    });
+    await setState({ captureState: 'error', transcriptionLog: [{ text: errorMsg, speaker: 'System' }] });
     return;
   }
 
@@ -65,37 +62,21 @@ async function startCapture(tab) {
   }
 
   try {
-    // 2. Capture the tab's audio stream.
-    audioStream = await chrome.tabCapture.capture({
-        audio: true,
-        video: false,
-        targetTabId: tab.id
-    });
-
-    // 3. Setup the MediaRecorder.
+    audioStream = await chrome.tabCapture.capture({ audio: true, video: false, targetTabId: tab.id });
     mediaRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
 
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        transcribeAudio(event.data);
-      }
-    };
-
+    mediaRecorder.ondataavailable = (event) => event.data.size > 0 && transcribeAudio(event.data);
     mediaRecorder.onstop = () => {
       log('MediaRecorder stopped.');
-      if(audioStream) {
-        audioStream.getTracks().forEach(track => track.stop());
-      }
+      if(audioStream) audioStream.getTracks().forEach(track => track.stop());
       audioStream = null;
       mediaRecorder = null;
     };
     
     mediaRecorder.start(10000);
-
-    // 4. Update state and UI.
     await setState({ captureState: 'active', activeTabId: tab.id, transcriptionLog: [] });
     updateIcon();
-    log('Capture initiated successfully.');
+    log('Capture initiated successfully on VTF platform.');
 
   } catch (error) {
     log('Error starting capture:', error.message);
@@ -109,10 +90,7 @@ async function stopCapture() {
   log('Attempting to stop capture...');
   await setState({ captureState: 'inactive', transcriptionState: 'inactive', activeTabId: null });
   updateIcon();
-
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
-  }
+  if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
   log('Capture stop process initiated.');
 }
 
@@ -177,21 +155,49 @@ function updateIcon() {
 }
 
 // --- Event Listeners ---
-// *** SIMPLIFIED MESSAGE LISTENER ***
+
+// *** NEW: Context-Aware Logic ***
+// This function enables or disables the extension's icon based on the URL.
+async function updateActionState(tabId) {
+    if (!tabId) return;
+    try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab && tab.url && tab.url.startsWith(VTF_URL_PATTERN)) {
+            chrome.action.enable(tabId);
+        } else {
+            chrome.action.disable(tabId);
+        }
+    } catch(e) {
+        // This can happen if the tab is closed before the get() call completes.
+        log(`Could not get tab ${tabId}, likely closed.`);
+    }
+}
+
+// Enable/disable the icon when a tab is updated.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    // We only need to check when the URL changes.
+    if (changeInfo.url) {
+        updateActionState(tabId);
+    }
+});
+
+// Enable/disable the icon when the user switches to a different tab.
+chrome.tabs.onActivated.addListener((activeInfo) => {
+    updateActionState(activeInfo.tabId);
+});
+
+// The main message handler.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.type === 'get-status') {
     sendResponse(state);
-    return true; // Keep channel open for the synchronous response.
+    return true;
   }
 
-  // Handle other messages asynchronously without returning true, to prevent channel closed errors.
   (async () => {
     switch (request.type) {
       case 'start-capture':
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab) {
-          await startCapture(tab); // Pass the whole tab object
-        }
+        if (tab) await startCapture(tab);
         break;
       case 'stop-capture':
         await stopCapture();
@@ -202,7 +208,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
   })().catch(e => log(`Error in message handler for ${request.type}:`, e.message));
   
-  // Return false for async handlers where we don't use sendResponse.
   return false;
 });
 
@@ -214,4 +219,13 @@ chrome.tabs.onRemoved.addListener(tabId => {
 });
 
 chrome.runtime.onStartup.addListener(initializeState);
-chrome.runtime.onInstalled.addListener(initializeState);
+chrome.runtime.onInstalled.addListener(async () => {
+    await initializeState();
+    // On install, check all existing tabs and disable the action until the user navigates.
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+        if(tab.id) {
+           updateActionState(tab.id);
+        }
+    }
+});
