@@ -36,13 +36,6 @@ async function initializeState() {
   log('Initial state loaded.', state);
 }
 
-// *** HELPER FUNCTION TO RECONSTRUCT THE BLOB ***
-async function dataUrlToBlob(dataUrl) {
-    const response = await fetch(dataUrl);
-    const blob = await response.blob();
-    return blob;
-}
-
 async function startCapture(tab) {
   log(`Attempting to start capture for tab: ${tab.id}`);
   if (!tab.url || !tab.url.startsWith(VTF_URL_PATTERN)) {
@@ -91,7 +84,7 @@ async function transcribeAudio(audioBlob) {
     await setState({ transcriptionState: 'transcribing' });
     try {
       const formData = new FormData();
-      // This will now succeed because we have a proper Blob object.
+      // The audioBlob will now have the correct MIME type.
       formData.append('file', audioBlob, 'audio.webm');
       formData.append('model', 'whisper-1');
   
@@ -177,10 +170,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
       case 'stop-capture': await stopCapture(); break;
       case 'options-updated': await initializeState(); break;
-      // *** THIS IS THE FIX ***
-      // We now receive a dataUrl and convert it back to a blob before transcribing.
       case 'audio-blob':
-        const audioBlob = await dataUrlToBlob(request.data.dataUrl);
+        // *** THIS IS THE FIX ***
+        // 1. Fetch the data URL from the message.
+        const response = await fetch(request.data.dataUrl);
+        const blob = await response.blob();
+        // 2. Reconstruct the blob with the correct, explicit MIME type.
+        const audioBlob = new Blob([blob], { type: 'audio/webm' });
+        // 3. Send the correctly-typed blob for transcription.
         await transcribeAudio(audioBlob);
         break;
       case 'recording-error':
