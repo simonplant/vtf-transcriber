@@ -120,7 +120,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
   }
   
-  console.log('[Content] Received message:', request);
+  // console.log('[Content] Received message:', request);
   
   try {
     if (request.action === 'startManualCapture' || request.type === 'start_capture') {
