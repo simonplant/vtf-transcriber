@@ -1,94 +1,68 @@
 # VTF Audio Transcriber Chrome Extension Makefile
+#
+# A streamlined Makefile for modern Chrome Extension development.
+# This file focuses on a simple, efficient build-and-reload workflow.
 
 # === Configuration ===
-EXTENSION_NAME ?= vtf-transcriber
+# Reads the version directly from your manifest file.
 VERSION := $(shell jq -r .version manifest.json)
 
-# Cross-platform path for Google Chrome
-ifeq ($(OS),Windows_NT)
-	CHROME_PATH ?= "C:\Program Files\Google\Chrome\Application\chrome.exe"
-else ifeq ($(shell uname),Linux)
-	CHROME_PATH ?= google-chrome
-else # Default to macOS
-	CHROME_PATH ?= "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-endif
-
 # === Cosmetics ===
-CYAN := \033[0;36m
-GREEN := \033[0;32m
-RED := \033[0;31m
-NC := \033[0m # No Color
+CYAN    := \033[0;36m
+GREEN   := \033[0;32m
+RED     := \033[0;31m
+NC      := \033[0m # No Color
 
-.PHONY: all dev dist clean help
+# === Target Definitions ===
+# Declares targets that are not files.
+.PHONY: all watch dist clean help
 
-# === Core Targets ===
+# --- Core Targets ---
 
-# Default target
+# Default target runs when you just type 'make'.
 all: help
 
-# Create distribution directory for Chrome extension
-dist:
+# The new development command.
+# This task watches for file changes and automatically rebuilds the extension.
+# It requires 'entr' to be installed (http://eradman.com/entrproject/).
+#
+# On macOS: brew install entr
+# On Debian/Ubuntu: sudo apt-get install entr
+#
+watch: dist ## ✨ Start the development watcher to auto-rebuild on file changes.
+	@if ! command -v entr &> /dev/null; then \
+		echo "$(RED)Error: 'entr' is not installed. It is required for 'make watch'.$(NC)"; \
+		echo "To install, run: $(CYAN)brew install entr$(NC) (macOS) or $(CYAN)sudo apt-get install entr$(NC) (Debian/Ubuntu)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ Watching for changes. Press Ctrl+C to exit.$(NC)"
+	@echo "  Load the '$(CYAN)dist/$(NC)' directory in Chrome via 'Load unpacked'."
+	@echo "  After saving changes, just reload the extension in your browser."
+	@find src icons manifest.json | entr -c make dist
+
+# Creates a clean, loadable extension in the 'dist/' directory.
+# This is what you'll load into Chrome.
+dist: clean ## 📦 Build the extension for distribution into the 'dist/' folder.
 	@echo "$(CYAN)Creating distribution directory...$(NC)"
-	@rm -rf dist
 	@mkdir -p dist
-	@cp -r src/* dist/
 	@cp manifest.json dist/
+	@cp -r src/* dist/
 	@cp -r icons dist/
+	@# Remove unwanted development files from the final build
 	@find dist -name ".DS_Store" -delete
-	@find dist -name ".git*" -delete
-	@echo "$(GREEN)Distribution directory created at ./dist$(NC)"
-	@echo "$(CYAN)You can now load this extension in Chrome:$(NC)"
-	@echo "1. Open Chrome and go to chrome://extensions/"
-	@echo "2. Enable 'Developer mode'"
-	@echo "3. Click 'Load unpacked' and select the 'dist' directory"
+	@echo "$(GREEN)✓ Extension built successfully in 'dist/' directory!$(NC)"
 
-# Remove generated files
-clean:
-	@echo "$(CYAN)Cleaning distribution directory...$(NC)"
+# Removes the generated 'dist/' directory.
+clean: ## 🧹 Remove the 'dist/' directory.
+	@echo "$(CYAN)Cleaning build artifacts...$(NC)"
 	@rm -rf dist
-	@echo "$(GREEN)Clean complete!$(NC)"
+	@echo "$(GREEN)✓ Clean complete!$(NC)"
 
-# Load the extension in a new Chrome instance for testing
-load:
-	@echo "$(CYAN)Loading extension in Chrome from ./dist folder...$(NC)"
-	@if [ ! -d "dist" ]; then \
-		echo "$(RED)Error: dist directory not found. Run 'make dist' first.$(NC)"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$(CHROME_PATH)" ]; then \
-		echo "$(RED)Error: Chrome not found at $(CHROME_PATH)$(NC)"; \
-		exit 1; \
-	fi
-	@$(CHROME_PATH) --load-extension=$(shell pwd)/dist --enable-logging --v=1
-
-# Development mode with hot reloading
-dev:
-	@echo "$(CYAN)Starting development mode...$(NC)"
-	@if [ ! -d "src" ]; then \
-		echo "$(RED)Error: src directory not found.$(NC)"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$(CHROME_PATH)" ]; then \
-		echo "$(RED)Error: Chrome not found at $(CHROME_PATH)$(NC)"; \
-		exit 1; \
-	fi
-	@echo "$(GREEN)Starting Chrome in development mode...$(NC)"
-	@echo "$(CYAN)Instructions:$(NC)"
-	@echo "1. Chrome will open with the extension loaded"
-	@echo "2. Make changes to files in the src directory"
-	@echo "3. Click the refresh icon in chrome://extensions/"
-	@echo "4. Press Ctrl+C to stop the development server"
-	@$(CHROME_PATH) --load-extension=$(shell pwd)/src --enable-logging --v=1 --user-data-dir="$(shell pwd)/chrome-dev-profile" &
-
-# Display this help message
-help:
-	@echo "VTF Audio Transcriber - Makefile Commands"
+# Displays a helpful list of commands.
+help: ## 🆘 Show this help message.
+	@echo "Makefile Commands"
 	@echo ""
-	@echo "Development:"
-	@echo "  $(GREEN)make dev$(NC)     - Start development mode with hot reloading"
-	@echo "  $(GREEN)make dist$(NC)    - Create distribution directory for Chrome extension"
-	@echo "  $(GREEN)make load$(NC)    - Load extension in Chrome for testing"
+	@echo "Usage: make [target]"
 	@echo ""
-	@echo "Maintenance:"
-	@echo "  $(GREEN)make clean$(NC)   - Remove distribution directory"
-	@echo "  $(GREEN)make help$(NC)    - Show this help message"
+	@# This AWK script nicely formats the comments next to the targets.
+	@awk 'BEGIN {FS = "## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[0;32m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
