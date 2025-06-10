@@ -7,7 +7,6 @@
 </head>
 <body>
   <div class="popup-container">
-    <!-- Header with Title and Buttons -->
     <div class="header">
       <h1>VTF Audio Transcriber</h1>
       <div class="header-controls">
@@ -15,8 +14,6 @@
         <button id="stopCaptureBtn" disabled>Stop</button>
       </div>
     </div>
-
-    <!-- Status bar with indicators -->
     <div class="status-bar">
       <div class="status-group">
         <span class="status-label">Capture:</span>
@@ -29,15 +26,11 @@
         <span id="transcriptionStatusText">Idle</span>
       </div>
     </div>
-
-    <!-- Main content area for the chat/log -->
     <div id="transcriptionLog" class="transcription-log">
       <div class="chat-message system">
         <span>Transcription log will appear here.</span>
       </div>
     </div>
-
-    <!-- Footer with stats -->
     <div class="footer">
       <div class="stat-item">
         <span class="stat-label">Duration</span>
@@ -52,7 +45,6 @@
         <span id="errorCount" class="stat-value">0</span>
       </div>
     </div>
-
   </div>
   <script src="popup.js"></script>
 </body>
