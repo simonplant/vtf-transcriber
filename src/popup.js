@@ -23,200 +23,236 @@ async function initializePopup() {
 
 // Debug logging function
 function debugLog(message, data = null) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[VTF Popup ${timestamp}] ${message}`;
+  const logMessage = `[VTF Popup] ${message}`;
   console.log(logMessage, data || '');
+  // Send log to background script
+  chrome.runtime.sendMessage({
+    type: 'log',
+    message: logMessage,
+    data: data
+  }).catch(() => {
+    // Ignore errors if background script isn't ready
+  });
 }
 
-// Helper function to safely get element
+// Helper function to safely get elements
 function getElement(id) {
   const element = document.getElementById(id);
   if (!element) {
-    throw new Error(`Required element #${id} not found`);
+    debugLog(`Error: Element with id '${id}' not found`);
   }
   return element;
 }
 
 // Initialize UI elements
 function initializeUI() {
-  debugLog('Initializing UI elements...');
+  debugLog('Initializing UI...');
   
+  // Log all elements in the document
+  const allElements = document.querySelectorAll('*');
+  debugLog('All elements in document:', Array.from(allElements).map(el => ({
+    id: el.id,
+    tagName: el.tagName,
+    className: el.className
+  })));
+
+  // Get UI elements
+  const startCaptureBtn = getElement('startCaptureBtn');
+  const stopCaptureBtn = getElement('stopCaptureBtn');
+  const testConnectionBtn = getElement('testConnectionBtn');
+  const statusIndicator = getElement('statusIndicator');
+  const statusText = getElement('statusText');
+  const statsContainer = getElement('statsContainer');
+  const totalDuration = getElement('totalDuration');
+  const totalTranscriptions = getElement('totalTranscriptions');
+  const errorCount = getElement('errorCount');
+  const lastUpdate = getElement('lastUpdate');
+
+  // Verify all elements exist
   const elements = {
-    captureState: getElement('capture-state'),
-    captureDuration: getElement('capture-duration'),
-    transcriptionState: getElement('transcription-state'),
-    lastUpdate: getElement('last-update'),
-    totalDuration: getElement('total-duration'),
-    totalTranscriptions: getElement('total-transcriptions'),
-    errorCount: getElement('error-count'),
-    startCaptureBtn: getElement('start-capture'),
-    stopCaptureBtn: getElement('stop-capture'),
-    testConnectionBtn: getElement('test-connection')
+    startCaptureBtn,
+    stopCaptureBtn,
+    testConnectionBtn,
+    statusIndicator,
+    statusText,
+    statsContainer,
+    totalDuration,
+    totalTranscriptions,
+    errorCount,
+    lastUpdate
   };
 
-  debugLog('All UI elements found successfully');
-  return elements;
-}
-
-// Initialize event listeners
-function initializeEventListeners(elements) {
-  debugLog('Setting up event listeners...');
-  
-  elements.startCaptureBtn.addEventListener('click', startCapture);
-  elements.stopCaptureBtn.addEventListener('click', stopCapture);
-  
-  elements.testConnectionBtn.addEventListener('click', async () => {
-    elements.testConnectionBtn.textContent = 'Testing...';
-    elements.testConnectionBtn.disabled = true;
-    try {
-      await new Promise(r => setTimeout(r, 500));
-      elements.testConnectionBtn.textContent = 'Success';
-    } catch {
-      elements.testConnectionBtn.textContent = 'Failed';
-    }
-    setTimeout(() => {
-      elements.testConnectionBtn.textContent = 'Test Connection';
-      elements.testConnectionBtn.disabled = false;
-    }, 1200);
-  });
-
-  // Listen for state updates from service worker
-  chrome.runtime.onMessage.addListener((message) => {
-    debugLog(`Received message: ${message.type}`, message);
-    if (message.type === 'stateUpdate') {
-      if (message.captureState) updateCaptureState(message.captureState);
-      if (message.transcriptionState) updateTranscriptionState(message.transcriptionState);
-      if (message.stats) updateStats(message.stats);
-      if (message.lastUpdate) elements.lastUpdate.textContent = message.lastUpdate;
+  Object.entries(elements).forEach(([name, element]) => {
+    if (element) {
+      debugLog(`Found element: ${name}`);
+    } else {
+      debugLog(`Missing element: ${name}`);
     }
   });
 
-  debugLog('Event listeners initialized');
+  // Set up event listeners
+  if (startCaptureBtn) {
+    startCaptureBtn.onmousedown = async (e) => {
+      e.preventDefault();
+      debugLog('Start capture button pressed');
+      try {
+        const response = await chrome.runtime.sendMessage({ type: 'start-capture' });
+        debugLog('Start capture response:', response);
+        if (response.status === 'started') {
+          updateUIState('active');
+        } else {
+          debugLog('Failed to start capture:', response.error);
+          updateUIState('error');
+        }
+      } catch (error) {
+        debugLog('Error starting capture:', error);
+        updateUIState('error');
+      }
+    };
+    debugLog('Start capture button handler attached');
+  }
+
+  if (stopCaptureBtn) {
+    stopCaptureBtn.onmousedown = async (e) => {
+      e.preventDefault();
+      debugLog('Stop capture button pressed');
+      try {
+        const response = await chrome.runtime.sendMessage({ type: 'stop-capture' });
+        debugLog('Stop capture response:', response);
+        if (response.status === 'stopped') {
+          updateUIState('inactive');
+        } else {
+          debugLog('Failed to stop capture:', response.error);
+          updateUIState('error');
+        }
+      } catch (error) {
+        debugLog('Error stopping capture:', error);
+        updateUIState('error');
+      }
+    };
+    debugLog('Stop capture button handler attached');
+  }
+
+  if (testConnectionBtn) {
+    testConnectionBtn.onmousedown = async (e) => {
+      e.preventDefault();
+      debugLog('Test connection button pressed');
+      try {
+        const response = await fetch('http://localhost:3000/health');
+        const data = await response.json();
+        debugLog('Connection test response:', data);
+        if (data.status === 'ok') {
+          showNotification('Connection Test', 'Successfully connected to server');
+        } else {
+          showNotification('Connection Test', 'Server returned unexpected status');
+        }
+      } catch (error) {
+        debugLog('Connection test failed:', error);
+        showNotification('Connection Test', 'Failed to connect to server');
+      }
+    };
+    debugLog('Test connection button handler attached');
+  }
+
+  // Initial state check
+  checkCaptureState();
 }
 
-// State management
-let captureStartTime = null;
-let durationInterval = null;
-let accumulatedDuration = 0;
-let elements = null;
+// Update UI state
+function updateUIState(state) {
+  debugLog('Updating UI state:', state);
+  const statusIndicator = getElement('statusIndicator');
+  const statusText = getElement('statusText');
+  const startCaptureBtn = getElement('startCaptureBtn');
+  const stopCaptureBtn = getElement('stopCaptureBtn');
 
-// Main initialization
-document.addEventListener('DOMContentLoaded', async () => {
-  debugLog('DOM Content Loaded - Starting initialization');
-  
+  if (!statusIndicator || !statusText || !startCaptureBtn || !stopCaptureBtn) {
+    debugLog('Error: Required UI elements not found for state update');
+    return;
+  }
+
+  switch (state) {
+    case 'active':
+      statusIndicator.className = 'status-indicator active';
+      statusText.textContent = 'Recording';
+      startCaptureBtn.disabled = true;
+      stopCaptureBtn.disabled = false;
+      break;
+    case 'inactive':
+      statusIndicator.className = 'status-indicator';
+      statusText.textContent = 'Ready';
+      startCaptureBtn.disabled = false;
+      stopCaptureBtn.disabled = true;
+      break;
+    case 'error':
+      statusIndicator.className = 'status-indicator error';
+      statusText.textContent = 'Error';
+      startCaptureBtn.disabled = false;
+      stopCaptureBtn.disabled = true;
+      break;
+  }
+}
+
+// Check current capture state
+async function checkCaptureState() {
+  debugLog('Checking capture state...');
   try {
-    // Initialize UI elements
-    elements = initializeUI();
-    
-    // Load initial state
-    const state = await initializePopup();
-    
-    // Update UI with initial state
-    updateCaptureState(state.captureState);
-    updateTranscriptionState(state.transcriptionState);
-    updateStats(state.stats);
-    elements.lastUpdate.textContent = state.lastUpdate;
-    
-    // Set up event listeners
-    initializeEventListeners(elements);
-    
-    debugLog('Popup initialization complete');
+    const response = await chrome.runtime.sendMessage({ type: 'get-status' });
+    debugLog('Status check response:', response);
+    updateUIState(response.isActive ? 'active' : 'inactive');
   } catch (error) {
-    console.error('Popup initialization failed:', error);
-    document.body.innerHTML = `
-      <div style="color: red; padding: 20px;">
-        <h2>Error Initializing Popup</h2>
-        <p>${error.message}</p>
-        <p>Please check the console for more details.</p>
-      </div>
-    `;
+    debugLog('Error checking capture state:', error);
+    updateUIState('error');
+  }
+}
+
+// Update stats display
+function updateStats(stats) {
+  debugLog('Updating stats:', stats);
+  const totalDuration = getElement('totalDuration');
+  const totalTranscriptions = getElement('totalTranscriptions');
+  const errorCount = getElement('errorCount');
+  const lastUpdate = getElement('lastUpdate');
+
+  if (!totalDuration || !totalTranscriptions || !errorCount || !lastUpdate) {
+    debugLog('Error: Required stats elements not found');
+    return;
+  }
+
+  totalDuration.textContent = formatDuration(stats.totalDuration);
+  totalTranscriptions.textContent = stats.totalTranscriptions;
+  errorCount.textContent = stats.errorCount;
+  lastUpdate.textContent = stats.lastUpdate;
+}
+
+// Format duration in seconds to MM:SS
+function formatDuration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+}
+
+// Show notification
+function showNotification(title, message) {
+  debugLog('Showing notification:', { title, message });
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icon48.png',
+    title: title,
+    message: message
+  });
+}
+
+// Listen for state updates from service worker
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === 'stateUpdate') {
+    debugLog('Received state update:', message);
+    updateUIState(message.captureState);
   }
 });
 
-// UI Update Functions
-function updateCaptureState(state) {
-  debugLog(`Updating capture state to: ${state}`);
-  elements.captureState.textContent = capitalize(state);
-  if (state === 'active' || state === 'Active') {
-    elements.startCaptureBtn.disabled = true;
-    elements.stopCaptureBtn.disabled = false;
-    startDurationTimer();
-  } else {
-    elements.startCaptureBtn.disabled = false;
-    elements.stopCaptureBtn.disabled = true;
-    stopDurationTimer();
-  }
-}
-
-function updateTranscriptionState(state) {
-  debugLog(`Updating transcription state to: ${state}`);
-  elements.transcriptionState.textContent = capitalize(state);
-}
-
-function updateStats(stats) {
-  debugLog('Updating stats:', stats);
-  accumulatedDuration = stats.totalDuration || 0;
-  elements.totalDuration.textContent = `${accumulatedDuration}s`;
-  elements.totalTranscriptions.textContent = stats.totalTranscriptions || 0;
-  elements.errorCount.textContent = stats.errorCount || 0;
-}
-
-// Timer Functions
-function startDurationTimer() {
-  if (durationInterval) return;
-  captureStartTime = Date.now();
-  durationInterval = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - captureStartTime) / 1000) + accumulatedDuration;
-    elements.captureDuration.textContent = formatDuration(elapsed);
-    elements.totalDuration.textContent = `${elapsed}s`;
-  }, 1000);
-  debugLog('Duration timer started');
-}
-
-function stopDurationTimer() {
-  if (durationInterval) {
-    clearInterval(durationInterval);
-    durationInterval = null;
-    if (captureStartTime) {
-      accumulatedDuration += Math.floor((Date.now() - captureStartTime) / 1000);
-      captureStartTime = null;
-    }
-  }
-  elements.captureDuration.textContent = '00:00';
-  debugLog('Duration timer stopped');
-}
-
-// Utility Functions
-function formatDuration(seconds) {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function capitalize(text) {
-  if (!text) return '';
-  return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
-}
-
-// Capture Control Functions
-function startCapture() {
-  debugLog('Starting capture...');
-  chrome.runtime.sendMessage({ type: 'start-capture' }, (response) => {
-    debugLog('Start capture response:', response);
-    if (response?.status === 'started') {
-      updateCaptureState('active');
-      chrome.storage.local.set({ captureState: 'active' });
-    }
-  });
-}
-
-function stopCapture() {
-  debugLog('Stopping capture...');
-  chrome.runtime.sendMessage({ type: 'stop-capture' }, (response) => {
-    debugLog('Stop capture response:', response);
-    if (response?.status === 'stopped') {
-      updateCaptureState('inactive');
-      chrome.storage.local.set({ captureState: 'inactive' });
-    }
-  });
-}
+// Initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  debugLog('DOM content loaded');
+  initializeUI();
+});

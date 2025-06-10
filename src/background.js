@@ -31,10 +31,34 @@ let activeTabId = null;
 // Extension Lifecycle Events
 chrome.runtime.onStartup.addListener(() => {
   console.log('VTF Extension Started');
+  // Clear any stale state
+  chrome.storage.local.set({
+    captureState: 'inactive',
+    transcriptionState: 'inactive',
+    stats: { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 },
+    lastUpdate: 'Never'
+  });
 });
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('VTF Extension Installed/Updated');
+  // Clear any stale state
+  chrome.storage.local.set({
+    captureState: 'inactive',
+    transcriptionState: 'inactive',
+    stats: { totalDuration: 0, totalTranscriptions: 0, errorCount: 0 },
+    lastUpdate: 'Never'
+  });
+});
+
+// Check for pending actions on startup
+chrome.runtime.onStartup.addListener(async () => {
+  debugLog('Extension starting up, checking for pending actions...');
+  const { pendingAction } = await chrome.storage.local.get('pendingAction');
+  if (pendingAction) {
+    debugLog('Found pending action:', pendingAction);
+    await handlePendingAction(pendingAction);
+  }
 });
 
 // --- Offscreen Document Management ---
@@ -144,6 +168,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   debugLog('Received message:', { type: request.type, sender: sender.url });
   
   switch (request.type) {
+    case 'log':
+      // Forward log messages to the main console
+      console.log(request.message, request.data || '');
+      sendResponse({ status: 'ok' });
+      break;
+
     case 'start-capture':
       debugLog('Processing start-capture request');
       chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -161,15 +191,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sendResponse({ status: 'error', error: error.message });
         }
       });
-      break;
+      return true; // Keep message channel open for async response
 
     case 'stop-capture':
       debugLog('Processing stop-capture request');
       stopCapture().then(() => {
         debugLog('Capture stopped successfully');
         sendResponse({ status: 'stopped' });
+      }).catch(error => {
+        debugLog('Stop capture failed:', error);
+        sendResponse({ status: 'error', error: error.message });
       });
-      break;
+      return true; // Keep message channel open for async response
 
     case 'get-status':
       debugLog('Processing get-status request');
@@ -183,14 +216,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         debugLog('Status check result:', { isActive, activeTabId, currentTabId: tabs[0].id });
         sendResponse({ isActive });
       });
-      break;
+      return true; // Keep message channel open for async response
 
     case 'audio-blob':
       debugLog('Received audio blob from offscreen document');
       if (sender.url?.endsWith('offscreen.html')) {
         transcribeAudio(request.data.blob);
+        sendResponse({ status: 'ok' });
       } else {
         debugLog('Warning: Received audio blob from unexpected source:', sender.url);
+        sendResponse({ status: 'error', error: 'Invalid sender' });
       }
       break;
 
@@ -206,31 +241,75 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }).catch(() => {
         // Ignore errors if popup isn't open
       });
+      sendResponse({ status: 'ok' });
       break;
   }
-  return true; // Keep message channel open for async response
 });
 
 // --- Capture Control Functions ---
 async function startCapture(tabId) {
   debugLog('Starting capture for tab:', tabId);
+  
+  // Check if capture is already active
   if (activeTabId) {
     debugLog('Capture already active:', { activeTabId });
-    showNotification("Capture In Progress", "A capture is already active. Please stop it first.");
+    showNotification('Capture In Progress', 'A capture is already active. Please stop it first.');
     return;
   }
-  await setupOffscreenDocument();
+
   try {
+    // Get the stream ID for the tab
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
-    debugLog('Got media stream ID:', { streamId });
+    
+    // Capture the tab audio
+    const stream = await new Promise((resolve, reject) => {
+      chrome.tabCapture.capture({
+        audio: true,
+        video: false,
+        audioConstraints: {
+          mandatory: {
+            chromeMediaSource: 'tab',
+            chromeMediaSourceId: streamId
+          }
+        }
+      }, (stream) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(stream);
+        }
+      });
+    });
+
+    // Create offscreen document if it doesn't exist
+    await setupOffscreenDocument();
+
+    // Send the stream to the offscreen document
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'start-recording',
+      stream: stream
+    });
+
     activeTabId = tabId;
-    chrome.runtime.sendMessage({ type: 'start-recording', target: 'offscreen', streamId });
-    updateIcon(true);
     debugLog('Capture started successfully');
+    
+    // Update icon state
+    chrome.action.setIcon({
+      path: {
+        16: 'icons/icon16-active.png',
+        48: 'icons/icon48-active.png',
+        128: 'icons/icon128-active.png'
+      }
+    });
+    
+    // Update storage
+    await chrome.storage.local.set({ captureState: 'active' });
+    
   } catch (error) {
     debugLog('Failed to start capture:', error);
-    showNotification('Capture Error', `Could not start: ${error.message}`);
-    await cleanup();
+    showNotification('Capture Failed', error.message);
+    throw error;
   }
 }
 
@@ -283,3 +362,27 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     stopCapture();
   }
 });
+
+// Handle pending actions
+async function handlePendingAction(action) {
+  debugLog('Handling pending action:', action);
+  try {
+    switch (action) {
+      case 'start-capture':
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs.length > 0) {
+          await startCapture(tabs[0].id);
+        }
+        break;
+      case 'stop-capture':
+        await stopCapture();
+        break;
+    }
+    // Clear the pending action
+    await chrome.storage.local.remove('pendingAction');
+  } catch (error) {
+    debugLog('Error handling pending action:', error);
+    // Clear the pending action even if it failed
+    await chrome.storage.local.remove('pendingAction');
+  }
+}

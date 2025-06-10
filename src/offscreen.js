@@ -23,7 +23,7 @@ async function handleMessages(message) {
     // No target check needed here; background script is the only sender.
     switch (message.type) {
         case 'start-recording':
-            await startRecording(message.streamId);
+            await startRecording(message.stream);
             break;
         case 'stop-recording':
             stopRecording();
@@ -31,33 +31,13 @@ async function handleMessages(message) {
     }
 }
 
-async function startRecording(streamId) {
+async function startRecording(stream) {
     if (mediaRecorder?.state === 'recording') {
         console.warn('Recording is already in progress.');
         return;
     }
 
     try {
-        // Use chrome.tabCapture.capture to get the audio stream
-        const stream = await new Promise((resolve, reject) => {
-            chrome.tabCapture.capture({
-                audio: true,
-                video: false,
-                audioConstraints: {
-                    mandatory: {
-                        chromeMediaSource: 'tab',
-                        chromeMediaSourceId: streamId
-                    }
-                }
-            }, (stream) => {
-                if (chrome.runtime.lastError) {
-                    reject(chrome.runtime.lastError);
-                } else {
-                    resolve(stream);
-                }
-            });
-        });
-
         recordingStream = stream;
         
         // Configure MediaRecorder with optimal settings for Whisper API
