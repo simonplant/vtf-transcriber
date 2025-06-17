@@ -16,16 +16,28 @@ script.onload = function() {
 let chunksSent = 0;
 let lastTranscripts = new Map(); // Track last transcript per speaker for merging
 
+// Debug flag – switch to true for verbose per-chunk logging
+const DEBUG_CAPTURE = false;
+
+// Flag to stop traffic after extension reload is detected
+let contextInvalidated = false;
+
 // Listen for audio data from inject script
-window.addEventListener('message', (event) => {
+function handleAudioMessage(event) {
   // Only accept messages from the same window
   if (event.source !== window) return;
   
+  if (contextInvalidated) return;
+  
   if (event.data && event.data.type === 'VTF_AUDIO_DATA') {
-    console.log(`[Content] Received audio data from inject script: ${event.data.audioData.length} samples, max: ${event.data.maxSample}`);
+    if (DEBUG_CAPTURE) {
+      console.debug(`[Content] Received audio data: ${event.data.audioData.length} samples (peak ${event.data.maxSample.toFixed(5)})`);
+    }
     
     chunksSent++;
-    console.log(`[Content] Sending chunk #${chunksSent} to background...`);
+    if (DEBUG_CAPTURE) {
+      console.debug(`[Content] Sending chunk #${chunksSent} to background...`);
+    }
     
     // Check if extension context is still valid
     try {
@@ -38,15 +50,21 @@ window.addEventListener('message', (event) => {
         chunkNumber: chunksSent
       }, response => {
         if (chrome.runtime.lastError) {
-          console.error('[Content] Error sending audio data:', chrome.runtime.lastError);
-          
-          // Check if extension was reloaded
-          if (chrome.runtime.lastError.message.includes('context invalidated')) {
-            console.warn('[Content] Extension was reloaded. Reload the page to reconnect.');
-            showReloadNotification();
+          const msg = chrome.runtime.lastError.message || '';
+          if (msg.includes('context invalidated')) {
+            if (!contextInvalidated) {
+              console.warn('[Content] Extension context invalidated – further messages will be suppressed.');
+              showReloadNotification();
+              disableCaptureDueToInvalidContext();
+            }
+            contextInvalidated = true;
+          } else if (!msg.includes('receivers')) { // suppress benign "receivers" warnings
+            console.error('[Content] Error sending audio data:', chrome.runtime.lastError);
           }
         } else {
-          console.log(`[Content] Audio chunk #${chunksSent} sent successfully, response:`, response);
+          if (DEBUG_CAPTURE) {
+            console.debug(`[Content] Chunk #${chunksSent} acknowledged by background`);
+          }
         }
       });
     } catch (error) {
@@ -56,7 +74,16 @@ window.addEventListener('message', (event) => {
       }
     }
   }
-});
+}
+
+window.addEventListener('message', handleAudioMessage);
+
+function disableCaptureDueToInvalidContext() {
+  // Stop receiving further audio messages
+  window.removeEventListener('message', handleAudioMessage);
+  // Tell inject to stop
+  window.postMessage({ type: 'VTF_STOP_CAPTURE' }, '*');
+}
 
 // Show reload notification
 function showReloadNotification() {
@@ -125,14 +152,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   try {
     if (request.action === 'startManualCapture' || request.type === 'start_capture') {
       console.log('[Content] Manual capture start requested');
-      // The inject script is already monitoring, just acknowledge
+      // Tell inject script to (re)start capturing
+      window.postMessage({ type: 'VTF_START_CAPTURE' }, '*');
       sendResponse({status: 'started', timestamp: Date.now()});
       return false; // Synchronous response
     }
     
     if (request.action === 'stopManualCapture' || request.type === 'stop_capture') {
       console.log('[Content] Manual capture stop requested');
-      // Could implement a way to pause inject script if needed
+      // Tell inject script to stop capturing
+      window.postMessage({ type: 'VTF_STOP_CAPTURE' }, '*');
       sendResponse({status: 'stopped', timestamp: Date.now()});
       return false; // Synchronous response
     }
@@ -332,7 +361,7 @@ function displayTranscription(transcription, merged = false) {
     }
     
     const streamId = transcription.streamId || 'unknown';
-    const speakerName = streamId.split('-')[1] || 'Unknown';
+    const speakerName = transcription.speaker || (streamId.split('-')[1] || 'Unknown');
     
     if (merged && lastTranscripts.has(streamId)) {
       // Update existing transcript

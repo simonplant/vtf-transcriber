@@ -18,7 +18,10 @@ const CONFIG = {
   // Processing settings
   MAX_CONCURRENT_PROCESSING: 4,
   // Minimum seconds to collect before sending the very first chunk for a speaker
-  STARTUP_MIN_DURATION: 2
+  STARTUP_MIN_DURATION: 2,
+  // Watchdog settings
+  STALL_IDLE_THRESHOLD: 3000,   // ms of inactivity before forcing flush
+  STALL_MIN_DURATION: 1         // s – only flush if we have at least this much audio
 };
 
 // Store audio chunks and transcriptions
@@ -37,6 +40,11 @@ let lastTranscripts = new Map();
 
 const speakerAliasMap = new Map();
 
+// Simple log helper – switch between 'debug', 'info', 'silent'
+const LOG = { level: 'info' };
+function dbg(...msg){ if (LOG.level==='debug') console.log(...msg); }
+function info(...msg){ if (LOG.level!=='silent') console.log(...msg); }
+
 // Load API key on startup
 chrome.storage.local.get(['openaiApiKey'], (result) => {
   if (result.openaiApiKey) {
@@ -50,13 +58,19 @@ chrome.storage.local.get(['openaiApiKey'], (result) => {
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   try {
-    console.log('[VTF Background] Received message:', {
+    dbg('[VTF Background] Received message:', {
       type: request.type,
       dataLength: request.audioData?.length,
       timestamp: new Date().toISOString()
     });
     
     if (request.type === 'audioData') {
+      if (!isCapturing) {
+        dbg('[VTF Background] Ignoring audioData: capture is stopped');
+        sendResponse({ received: true, ignored: true });
+        return true;
+      }
+
       // Handle audio data with speaker-aware buffering
       if (request.audioData && request.audioData.length > 0) {
         const streamId = request.streamId || 'unknown';
@@ -190,6 +204,12 @@ function trackSpeechActivity(streamId) {
   recentActivity = recentActivity.filter(
     activity => now - activity.timestamp < CONFIG.ACTIVITY_WINDOW
   );
+  
+  // Reset startup flag if speaker was silent for a while
+  const data = speakerBuffers.get(streamId);
+  if (data && data.processedOnce && now - data.lastActivityTime > CONFIG.SILENCE_TIMEOUT) {
+    data.processedOnce = false;
+  }
 }
 
 // Get current speech activity level
@@ -300,22 +320,28 @@ async function processSpeakerBuffer(streamId, reason) {
   
   console.log(`[VTF Background] Processing ${streamId} buffer: ${chunk.length} samples (${(chunk.length / CONFIG.SAMPLE_RATE).toFixed(2)}s), reason: ${reason}`);
   
-  // Check if chunk has actual audio (not just silence)
-  const maxSample = chunk.reduce((max, sample) => {
-    const absVal = Math.abs(sample);
-    return absVal > max ? absVal : max;
-  }, 0);
-  if (maxSample < CONFIG.SILENCE_THRESHOLD) {
-    console.log(`[VTF Background] ${streamId} chunk is silent, skipping transcription`);
+  // Analyse audio energy
+  const absVals = chunk.map(Math.abs);
+  const maxSample = absVals.reduce((m, x) => (x > m ? x : m), 0);
+  const avgSample = absVals.reduce((s, x) => s + x, 0) / absVals.length;
+  
+  // adaptive silence gate: allow quieter chunks as long as average energy is present
+  const maxGate = 0.0001; // very low peak allowed
+  const avgGate = 0.00002; // very low RMS allowed
+  
+  if (maxSample < maxGate && avgSample < avgGate) {
+    console.log(`[VTF Background] ${streamId} chunk below energy threshold (max=${maxSample.toFixed(6)}, avg=${avgSample.toFixed(6)}), skipping`);
     processingQueue.delete(streamId);
     updateBufferStatus();
-    
-    // Check if more audio needs processing
     if (speakerData.buffer.length > CONFIG.SAMPLE_RATE * CONFIG.MIN_CHUNK_SIZE) {
       setTimeout(() => checkAndProcessSpeakerBuffer(streamId), 100);
     }
     return;
   }
+  
+  // Normalise chunk so Whisper sees a consistent level
+  const gain = 1 / (maxSample || 1);
+  const normalised = chunk.map(v => Math.max(-1, Math.min(1, v * gain)));
   
   // Extract speaker name from streamId
   const speakerName = extractSpeakerName(streamId);
@@ -327,7 +353,7 @@ async function processSpeakerBuffer(streamId, reason) {
   
   try {
     // Process with Whisper API
-    const result = await processAudioChunk(new Float32Array(chunk), Date.now(), streamId);
+    const result = await processAudioChunk(new Float32Array(normalised), Date.now(), streamId);
     
     if (result && result.text) {
       // Add speaker name to result
@@ -394,7 +420,9 @@ function extractSpeakerName(streamId) {
   const staticMap = {
     XRcupJ: 'DP',
     Ixslfo: 'Rickman',
-    O3e0pz: 'Kira'
+    O3e0pz: 'Kira',
+    ccQjUW: 'Kira',
+    rgqrma: 'DP'
   };
   const shortId = key.substring(0, 6);
   if (staticMap[shortId]) return staticMap[shortId];
@@ -636,6 +664,21 @@ setInterval(() => {
     updateBufferStatus();
   }
 }, 3000);
+
+// -----------------------------------------
+// Watchdog: flush small idle buffers
+// -----------------------------------------
+setInterval(() => {
+  speakerBuffers.forEach((data, streamId) => {
+    const seconds = data.buffer.length / CONFIG.SAMPLE_RATE;
+    const idleMs  = Date.now() - data.lastActivityTime;
+
+    if (seconds >= CONFIG.STALL_MIN_DURATION && seconds < CONFIG.CHUNK_DURATION_ACTIVE && idleMs > CONFIG.STALL_IDLE_THRESHOLD) {
+      info(`[VTF Watchdog] Forcing flush of ${seconds.toFixed(2)}s from ${streamId}`);
+      processSpeakerBuffer(streamId, 'watchdog');
+    }
+  });
+}, 2000);
 
 // Log when service worker starts
 console.log('[VTF Background] Service worker started at', new Date().toISOString());
