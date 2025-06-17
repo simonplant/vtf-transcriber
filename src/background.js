@@ -45,13 +45,25 @@ const LOG = { level: 'info' };
 function dbg(...msg){ if (LOG.level==='debug') console.log(...msg); }
 function info(...msg){ if (LOG.level!=='silent') console.log(...msg); }
 
-// Load API key on startup
-chrome.storage.local.get(['openaiApiKey'], (result) => {
+// Load API key from secure storage (session storage is encrypted)
+chrome.storage.session.get(['openaiApiKey'], (result) => {
   if (result.openaiApiKey) {
     apiKey = result.openaiApiKey;
-    console.log('[VTF Background] API key loaded successfully');
+    console.log('[VTF Background] API key loaded from secure session storage');
   } else {
-    console.warn('[VTF Background] No API key found in storage');
+    // Try to migrate from local storage
+    chrome.storage.local.get(['openaiApiKey'], (localResult) => {
+      if (localResult.openaiApiKey) {
+        apiKey = localResult.openaiApiKey;
+        // Move to secure session storage
+        chrome.storage.session.set({ openaiApiKey: apiKey }, () => {
+          chrome.storage.local.remove(['openaiApiKey']);
+          console.log('[VTF Background] API key migrated to secure session storage');
+        });
+      } else {
+        console.warn('[VTF Background] No API key found in storage');
+      }
+    });
   }
 });
 
@@ -171,12 +183,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'setApiKey') {
       console.log('[VTF Background] Received setApiKey request');
       apiKey = request.apiKey;
-      chrome.storage.local.set({ openaiApiKey: apiKey }, () => {
+      // Use secure session storage (encrypted by Chrome)
+      chrome.storage.session.set({ openaiApiKey: apiKey }, () => {
         if (chrome.runtime.lastError) {
           console.error('[VTF Background] Error saving API key:', chrome.runtime.lastError);
           sendResponse({ status: 'error', error: chrome.runtime.lastError.message });
         } else {
-          console.log('[VTF Background] API key saved successfully');
+          // Remove old local storage key if it exists
+          chrome.storage.local.remove(['openaiApiKey']);
+          console.log('[VTF Background] API key saved to secure session storage');
           sendResponse({ status: 'saved' });
         }
       });
@@ -557,19 +572,45 @@ function float32ToWav(float32Array, sampleRate = 16000) {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
+// Retry function with exponential backoff
+async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
+  let lastError;
+  
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      
+      // Don't retry on 4xx errors (except 429 rate limit)
+      if (error.status && error.status >= 400 && error.status < 500 && error.status !== 429) {
+        throw error;
+      }
+      
+      if (i < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, i) + Math.random() * 1000;
+        info(`[VTF Background] Retry ${i + 1}/${maxRetries} after ${delay}ms for ${error.message}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
 // Process audio chunk with Whisper API
 async function processAudioChunk(audioData, timestamp, streamId) {
   console.log('[VTF Background] Processing audio chunk for transcription...');
   
   if (!apiKey) {
     console.error('[VTF Background] No API key available, attempting to reload...');
-    // Try to reload API key
-    const result = await chrome.storage.local.get(['openaiApiKey']);
+    // Try to reload API key from secure session storage
+    const result = await chrome.storage.session.get(['openaiApiKey']);
     if (result.openaiApiKey) {
       apiKey = result.openaiApiKey;
-      console.log('[VTF Background] API key reloaded from storage');
+      console.log('[VTF Background] API key reloaded from secure session storage');
     } else {
-      console.error('[VTF Background] No API key in storage');
+      console.error('[VTF Background] No API key in secure storage');
       return null;
     }
   }
@@ -588,21 +629,20 @@ async function processAudioChunk(audioData, timestamp, streamId) {
     
     console.log('[VTF Background] Sending to Whisper API...');
     
-    // Send to Whisper API
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: formData
+    // Send to Whisper API with retry logic
+    const response = await retryWithBackoff(async () => {
+      const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: formData
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      return res;
     });
     
     console.log('[VTF Background] Whisper API response status:', response.status);
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
-    }
     
     const result = await response.json();
     console.log('[VTF Background] Whisper API result:', result);
@@ -615,10 +655,8 @@ async function processAudioChunk(audioData, timestamp, streamId) {
         streamId: streamId
       };
       
-      // Store transcriptions (limit to last 10000)
-      if (transcriptions.length > 10000) {
-        transcriptions = transcriptions.slice(-10000);
-      }
+      // Store transcriptions with smart cleanup
+      transcriptions = cleanupTranscriptions(transcriptions);
       
       console.log('[VTF Background] Transcription added:', transcription.text);
       
@@ -635,8 +673,74 @@ async function processAudioChunk(audioData, timestamp, streamId) {
   }
 }
 
+// Memory management functions
+function cleanupTranscriptions(transcriptions) {
+  const MAX_TRANSCRIPTIONS = 1000;
+  const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+  const now = Date.now();
+  
+  // Remove old transcriptions first
+  let cleaned = transcriptions.filter(t => (now - t.timestamp) < MAX_AGE_MS);
+  
+  // If still too many, keep only the most recent
+  if (cleaned.length > MAX_TRANSCRIPTIONS) {
+    const removed = cleaned.length - MAX_TRANSCRIPTIONS;
+    cleaned = cleaned.slice(-MAX_TRANSCRIPTIONS);
+    dbg(`[VTF Background] Cleaned ${removed} old transcriptions`);
+  }
+  
+  return cleaned;
+}
+
+function cleanupSpeakerBuffers() {
+  const MAX_BUFFER_DURATION = 60; // seconds
+  const MAX_INACTIVE_TIME = 5 * 60 * 1000; // 5 minutes
+  const now = Date.now();
+  let cleaned = 0;
+  
+  speakerBuffers.forEach((data, streamId) => {
+    // Trim oversized buffers
+    const duration = data.buffer.length / CONFIG.SAMPLE_RATE;
+    if (duration > MAX_BUFFER_DURATION) {
+      const keepSamples = MAX_BUFFER_DURATION * CONFIG.SAMPLE_RATE;
+      data.buffer = data.buffer.slice(-keepSamples);
+      cleaned++;
+    }
+    
+    // Remove inactive speakers
+    if (now - data.lastActivityTime > MAX_INACTIVE_TIME) {
+      speakerBuffers.delete(streamId);
+      info(`[VTF Background] Removed inactive speaker: ${streamId}`);
+      cleaned++;
+    }
+  });
+  
+  if (cleaned > 0) {
+    dbg(`[VTF Background] Cleaned ${cleaned} speaker buffers`);
+  }
+}
+
+function getMemoryStats() {
+  const stats = {
+    transcriptions: transcriptions.length,
+    speakerBuffers: speakerBuffers.size,
+    totalBufferSamples: Array.from(speakerBuffers.values()).reduce((sum, data) => sum + data.buffer.length, 0)
+  };
+  
+  if (performance.memory) {
+    stats.heapUsed = (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + 'MB';
+    stats.heapTotal = (performance.memory.totalJSHeapSize / 1048576).toFixed(1) + 'MB';
+  }
+  
+  return stats;
+}
+
 // Periodic cleanup and maintenance
 setInterval(() => {
+  // Memory cleanup
+  transcriptions = cleanupTranscriptions(transcriptions);
+  cleanupSpeakerBuffers();
+  
   // Process any remaining audio if capture is active and buffer has been sitting
   if (isCapturing) {
     speakerBuffers.forEach((data, streamId) => {
@@ -659,11 +763,13 @@ setInterval(() => {
     }
   });
   
-  // Update visual feedback
+  // Update visual feedback and log memory stats
   if (isCapturing) {
     updateBufferStatus();
+    const stats = getMemoryStats();
+    dbg('[VTF Background] Memory stats:', stats);
   }
-}, 3000);
+}, 5000); // Increased to 5s for less frequent cleanup
 
 // -----------------------------------------
 // Watchdog: flush small idle buffers

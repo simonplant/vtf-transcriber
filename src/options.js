@@ -13,15 +13,23 @@ document.addEventListener('DOMContentLoaded', () => {
     toggleVisibility: !!toggleVisibility
   });
   
-  // Load existing API key
-  chrome.storage.local.get(['openaiApiKey'], (result) => {
-    console.log('[Options] Storage check:', {
-      hasKey: !!result.openaiApiKey,
-      keyLength: result.openaiApiKey ? result.openaiApiKey.length : 0
-    });
-    
-    if (result.openaiApiKey) {
-      apiKeyInput.value = result.openaiApiKey;
+  // Load current API key status from secure session storage
+  chrome.storage.session.get(['openaiApiKey'], (result) => {
+    if (result.openaiApiKey && result.openaiApiKey.trim()) {
+      // Show masked key
+      const masked = result.openaiApiKey.substring(0, 8) + '...' + result.openaiApiKey.slice(-4);
+      apiKeyInput.value = masked;
+      apiKeyInput.placeholder = 'API key is configured';
+      showStatus('API key is configured (secure session storage)', 'success');
+    } else {
+      // Check if there's an old key in local storage to migrate
+      chrome.storage.local.get(['openaiApiKey'], (localResult) => {
+        if (localResult.openaiApiKey && localResult.openaiApiKey.trim()) {
+          showStatus('API key found in local storage - will be migrated to secure storage on next use', 'warning');
+        } else {
+          showStatus('No API key configured', 'error');
+        }
+      });
     }
   });
   

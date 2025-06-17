@@ -6,6 +6,18 @@
   let activeProcessors = new Map();
   let capturePaused = false;
   
+  // Error handling wrapper
+  function withErrorBoundary(fn, context = '') {
+    return function(...args) {
+      try {
+        return fn.apply(this, args);
+      } catch (error) {
+        console.error(`[VTF Inject] Error in ${context}:`, error);
+        // Don't rethrow - keep the extension running
+      }
+    };
+  }
+  
   // Function to capture audio from an element
   function captureAudioElement(audioElement) {
     const streamId = audioElement.id;
@@ -35,6 +47,9 @@
         source = audioContext.createMediaStreamSource(audioElement.srcObject);
         console.log('[VTF Inject] Using MediaStream source');
       } else {
+        if (!audioElement.crossOrigin) {
+          audioElement.crossOrigin = 'anonymous';
+        }
         source = audioContext.createMediaElementSource(audioElement);
         console.log('[VTF Inject] Using MediaElement source');
       }
@@ -44,9 +59,15 @@
       let audioBuffer = [];
       const CHUNK_SIZE = 16000; // 1 second at 16kHz
       
-      processor.onaudioprocess = (e) => {
+      processor.onaudioprocess = withErrorBoundary((e) => {
         const inputData = e.inputBuffer.getChannelData(0);
-        const maxSample = Math.max(...inputData.map(Math.abs));
+        
+        // Safe max calculation for large arrays
+        let maxSample = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          const abs = Math.abs(inputData[i]);
+          if (abs > maxSample) maxSample = abs;
+        }
         
         // Always accumulate audio – downstream logic will decide if it is silence
         audioBuffer.push(...inputData);
@@ -69,7 +90,7 @@
             maxSample: maxSample
           }, '*');
         }
-      };
+      }, 'audio processing');
       
       // Connect pipeline
       source.connect(processor);
@@ -103,8 +124,8 @@
     }
   }
   
-  // Monitor for audio elements
-  const observer = new MutationObserver((mutations) => {
+  // Monitor for audio elements with error boundary
+  const observer = new MutationObserver(withErrorBoundary((mutations) => {
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
         if (node.nodeName === 'AUDIO' && node.id && node.id.startsWith('msRemAudio-')) {
@@ -130,7 +151,7 @@
         }
       });
     });
-  });
+  }, 'mutation observer'));
   
   // Start observing
   observer.observe(document.body, {

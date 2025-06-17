@@ -22,6 +22,36 @@ const DEBUG_CAPTURE = false;
 // Flag to stop traffic after extension reload is detected
 let contextInvalidated = false;
 
+// Message validation function
+function validateMessage(data, expectedType) {
+  if (!data || typeof data !== 'object') {
+    throw new Error('Invalid message format');
+  }
+  
+  if (data.type !== expectedType) {
+    throw new Error(`Expected message type ${expectedType}, got ${data.type}`);
+  }
+  
+  // Type-specific validation
+  switch (expectedType) {
+    case 'VTF_AUDIO_DATA':
+      if (!Array.isArray(data.audioData) || !data.streamId || !data.timestamp) {
+        throw new Error('Invalid audio data format');
+      }
+      if (data.audioData.length === 0) {
+        throw new Error('Empty audio data');
+      }
+      break;
+    case 'newTranscription':
+      if (!data.transcription || !data.transcription.text) {
+        throw new Error('Invalid transcription format');
+      }
+      break;
+  }
+  
+  return true;
+}
+
 // Listen for audio data from inject script
 function handleAudioMessage(event) {
   // Only accept messages from the same window
@@ -30,6 +60,13 @@ function handleAudioMessage(event) {
   if (contextInvalidated) return;
   
   if (event.data && event.data.type === 'VTF_AUDIO_DATA') {
+    try {
+      validateMessage(event.data, 'VTF_AUDIO_DATA');
+    } catch (error) {
+      console.warn('[Content] Invalid audio message:', error.message);
+      return;
+    }
+    
     if (DEBUG_CAPTURE) {
       console.debug(`[Content] Received audio data: ${event.data.audioData.length} samples (peak ${event.data.maxSample.toFixed(5)})`);
     }
@@ -167,6 +204,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     
     if (request.type === 'newTranscription') {
+      try {
+        validateMessage(request, 'newTranscription');
+      } catch (error) {
+        console.warn('[Content] Invalid transcription message:', error.message);
+        sendResponse({received: false, error: error.message});
+        return false;
+      }
+      
       console.log(`[Content] New transcription received: "${request.transcription.text}"`);
       console.log(`[Transcription ${new Date(request.transcription.timestamp).toLocaleTimeString()}]: ${request.transcription.text}`);
       displayTranscription(request.transcription, request.merged);
@@ -243,7 +288,7 @@ function createTranscriptionDisplay() {
         animation: pulse 1.5s infinite;
       "></div>
     </div>
-    <div style="display: flex; gap: 15px; font-size: 11px; color: #888;">
+    <div style="display: flex; gap: 10px; font-size: 11px; color: #888; align-items: center;">
       <span>Chunks: <span id="vtf-chunks-sent" style="color: #4CAF50;">0</span></span>
       <span>Buffer: <span id="vtf-buffer-size" style="color: #2196F3;">0.0s</span></span>
       <span id="vtf-activity-level" style="
@@ -252,6 +297,16 @@ function createTranscriptionDisplay() {
         background: rgba(255, 255, 255, 0.1);
         color: #888;
       ">Idle</span>
+      <button id="vtf-export-btn" style="
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: #fff;
+        padding: 2px 8px;
+        border-radius: 3px;
+        font-size: 10px;
+        cursor: pointer;
+        margin-left: auto;
+      ">Export</button>
     </div>
   `;
   display.appendChild(header);
@@ -340,6 +395,12 @@ function createTranscriptionDisplay() {
     }
   `;
   document.head.appendChild(style);
+  
+  // Add export functionality
+  const exportBtn = document.getElementById('vtf-export-btn');
+  if (exportBtn) {
+    exportBtn.onclick = exportTranscripts;
+  }
   
   document.body.appendChild(display);
 }
@@ -558,3 +619,40 @@ window.addEventListener('load', () => {
 });
 
 console.log('VTF Audio Extension: Ready and listening for audio...');
+
+// Export transcripts to text file
+function exportTranscripts() {
+  chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
+    if (chrome.runtime.lastError || !response || !response.transcriptions) {
+      console.error('[Content] Failed to get transcriptions for export');
+      return;
+    }
+    
+    const transcripts = response.transcriptions;
+    if (transcripts.length === 0) {
+      alert('No transcriptions to export');
+      return;
+    }
+    
+    // Format transcripts
+    const formatted = transcripts.map(t => {
+      const time = new Date(t.timestamp).toLocaleString();
+      const speaker = t.speaker || 'Unknown';
+      const duration = t.duration ? ` (${t.duration.toFixed(1)}s)` : '';
+      return `[${time}] ${speaker}${duration}: ${t.text}`;
+    }).join('\n\n');
+    
+    // Create and download file
+    const blob = new Blob([formatted], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vtf-transcripts-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    console.log(`[Content] Exported ${transcripts.length} transcriptions`);
+  });
+}
