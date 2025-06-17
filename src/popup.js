@@ -1,4 +1,4 @@
-// popup.js - Updated for your original HTML
+// popup.js - VTF Capture Dashboard
 
 // DOM elements
 const startBtn = document.getElementById('startBtn');
@@ -10,13 +10,26 @@ const captureStatus = document.getElementById('captureStatus');
 const apiKeyStatus = document.getElementById('apiKeyStatus');
 const chunksCount = document.getElementById('chunksCount');
 const transcriptionCount = document.getElementById('transcriptionCount');
-const transcriptContent = document.getElementById('transcriptContent');
+const activeSpeakers = document.getElementById('activeSpeakers');
+const sessionCost = document.getElementById('sessionCost');
+const performanceMetrics = document.getElementById('performanceMetrics');
+const speechActivity = document.getElementById('speechActivity');
+const processingStatus = document.getElementById('processingStatus');
+const lastTranscription = document.getElementById('lastTranscription');
+const currentTranscript = document.getElementById('currentTranscript');
 const errorMessage = document.getElementById('errorMessage');
 const successMessage = document.getElementById('successMessage');
 
 // State
 let isTranscribing = false;
 let hasApiKey = false;
+let sessionStartTime = null;
+let totalAudioMinutes = 0;
+let lastTranscriptTime = null;
+let currentTranscriptPreview = '';
+
+// Whisper API pricing (as of 2024)
+const WHISPER_COST_PER_MINUTE = 0.006; // $0.006 per minute
 
 // Start capture
 if (startBtn) {
@@ -28,6 +41,10 @@ if (startBtn) {
       showError('Please navigate to VTF first');
       return;
     }
+    
+    // Track session start
+    sessionStartTime = Date.now();
+    totalAudioMinutes = 0;
     
     // Send to content script
     chrome.tabs.sendMessage(tab.id, {type: 'start_capture'}, (response) => {
@@ -116,19 +133,90 @@ function updateStatus(isCapturing) {
   
   if (isCapturing) {
     statusIndicator.classList.add('active');
-    captureStatus.textContent = 'Capturing';
-    captureStatus.classList.add('success');
-    captureStatus.classList.remove('danger');
-    startBtn.textContent = 'Capturing...';
-    startBtn.classList.add('active');
+    captureStatus.textContent = 'Recording';
+    captureStatus.classList.add('active');
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
   } else {
     statusIndicator.classList.remove('active');
     captureStatus.textContent = 'Not Capturing';
-    captureStatus.classList.remove('success');
-    captureStatus.classList.add('danger');
-    startBtn.textContent = 'Start Capture';
-    startBtn.classList.remove('active');
+    captureStatus.classList.remove('active');
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
   }
+}
+
+// Calculate session cost
+function calculateSessionCost(chunks, transcriptions) {
+  // Estimate audio minutes from chunks (assuming 1-second chunks on average)
+  totalAudioMinutes = chunks / 60;
+  const cost = totalAudioMinutes * WHISPER_COST_PER_MINUTE;
+  return cost;
+}
+
+// Update activity display
+function updateActivityDisplay(response) {
+  // Update speech activity
+  const activity = response.speechActivity || 'none';
+  speechActivity.textContent = activity.charAt(0).toUpperCase() + activity.slice(1);
+  speechActivity.className = `activity-value ${activity}`;
+  
+  // Update processing status
+  const isProcessing = response.isProcessing || false;
+  processingStatus.textContent = isProcessing ? 'Active' : 'Idle';
+  processingStatus.className = isProcessing ? 'activity-value processing' : 'activity-value none';
+  
+  // Update last transcription time
+  if (response.transcriptionCount > 0) {
+    const now = Date.now();
+    if (!lastTranscriptTime || response.transcriptionCount !== lastTranscriptTime.count) {
+      lastTranscriptTime = { time: now, count: response.transcriptionCount };
+    }
+    
+    const timeSinceLastTranscript = now - lastTranscriptTime.time;
+    const timeText = formatTimeSince(timeSinceLastTranscript);
+    lastTranscription.textContent = timeText;
+    lastTranscription.className = timeSinceLastTranscript < 30000 ? 'activity-time recent' : 'activity-time old';
+  } else {
+    lastTranscription.textContent = 'Never';
+    lastTranscription.className = 'activity-time old';
+  }
+}
+
+// Format time since last event
+function formatTimeSince(ms) {
+  if (ms < 1000) return 'Just now';
+  if (ms < 60000) return `${Math.floor(ms / 1000)}s ago`;
+  if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`;
+  return `${Math.floor(ms / 3600000)}h ago`;
+}
+
+// Update current transcript preview
+function updateTranscriptPreview() {
+  chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
+    if (chrome.runtime.lastError || !response || !response.transcriptions) {
+      return;
+    }
+    
+    const transcriptions = response.transcriptions;
+    if (transcriptions.length > 0) {
+      const latest = transcriptions[transcriptions.length - 1];
+      const preview = latest.text.length > 60 ? latest.text.substring(0, 60) + '...' : latest.text;
+      const speaker = latest.speaker || 'Unknown';
+      
+      currentTranscript.innerHTML = `
+        <div class="transcript-preview active">
+          <strong>${speaker}:</strong> ${preview}
+        </div>
+      `;
+    } else {
+      currentTranscript.innerHTML = `
+        <div class="transcript-preview empty">
+          Waiting for audio...
+        </div>
+      `;
+    }
+  });
 }
 
 // Check status
@@ -142,77 +230,54 @@ function checkStatus() {
     console.log('[Popup] Status:', response);
     if (response) {
       updateStatus(response.isCapturing);
+      
+      // Update metrics
       chunksCount.textContent = response.chunksReceived || 0;
       transcriptionCount.textContent = response.transcriptionCount || 0;
+      activeSpeakers.textContent = response.activeSpeakers || 0;
       
-      // Update activity level if element exists
-      const activityElement = document.getElementById('activityLevel');
-      if (activityElement) {
-        const activityLevel = response.speechActivity || 'none';
-        activityElement.textContent = activityLevel.charAt(0).toUpperCase() + activityLevel.slice(1);
-        
-        switch (activityLevel) {
-          case 'high':
-            activityElement.className = 'info-value success';
-            break;
-          case 'low':
-            activityElement.className = 'info-value';
-            break;
-          default:
-            activityElement.className = 'info-value danger';
-        }
+      // Calculate and display session cost
+      const cost = calculateSessionCost(response.chunksReceived || 0, response.transcriptionCount || 0);
+      sessionCost.textContent = `$${cost.toFixed(3)}`;
+      
+      // Color code the cost
+      if (cost > 1.0) {
+        sessionCost.className = 'metric-value error';
+      } else if (cost > 0.5) {
+        sessionCost.className = 'metric-value warning';
+      } else {
+        sessionCost.className = 'metric-value';
       }
       
-      const speakersElement = document.getElementById('activeSpeakers');
-      if (speakersElement) {
-        speakersElement.textContent = response.activeSpeakers || 0;
-      }
+      // Update activity display
+      updateActivityDisplay(response);
       
       // Update API key status
       if (response.hasApiKey) {
-        apiKeyStatus.textContent = 'Configured';
+        apiKeyStatus.textContent = 'API Key Configured';
         apiKeyStatus.classList.add('success');
-        apiKeyStatus.classList.remove('danger');
+        apiKeyStatus.classList.remove('error');
         hasApiKey = true;
       } else {
-        apiKeyStatus.textContent = 'Not configured';
+        apiKeyStatus.textContent = 'API Key Required';
         apiKeyStatus.classList.remove('success');
-        apiKeyStatus.classList.add('danger');
+        apiKeyStatus.classList.add('error');
         hasApiKey = false;
       }
-    }
-  });
-}
-
-// Load transcriptions
-function loadTranscriptions() {
-  chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error('[Popup] Error getting transcriptions:', chrome.runtime.lastError);
-      return;
-    }
-    
-    if (response && response.transcriptions) {
-      if (response.transcriptions.length === 0) {
-        transcriptContent.innerHTML = '<div class="empty-state">No transcriptions yet. Start capturing to see results.</div>';
-      } else {
-        transcriptContent.innerHTML = '';
-        // Show last 10 transcriptions
-        const recent = response.transcriptions.slice(-10).reverse();
-        recent.forEach(trans => {
-          const entry = document.createElement('div');
-          entry.className = 'transcript-entry';
-          const time = new Date(trans.timestamp).toLocaleTimeString();
-          const speaker = trans.speaker || trans.streamId?.split('-')[1] || 'Unknown';
-          entry.innerHTML = `
-            <div class="transcript-time">${time} - ${speaker}</div>
-            <div class="transcript-text">${trans.text}</div>
-          `;
-          transcriptContent.appendChild(entry);
-        });
+      
+      // Update performance metrics if available
+      if (response.performance) {
+        performanceMetrics.innerHTML = `
+          <span>API Calls: ${response.performance.apiCalls}</span>
+          <span>Avg: ${response.performance.avgResponseTime}ms</span>
+          <span>Errors: ${response.performance.errorRate}%</span>
+        `;
       }
     }
   });
+  
+  // Update transcript preview
+  updateTranscriptPreview();
 }
 
 // Show error message
@@ -247,12 +312,10 @@ chrome.storage.local.get(['openaiApiKey'], (result) => {
 
 // Initial status check
 checkStatus();
-loadTranscriptions();
 
 // Update periodically
 setInterval(() => {
   checkStatus();
-  loadTranscriptions();
 }, 3000);
 
 // Initialize on DOM load

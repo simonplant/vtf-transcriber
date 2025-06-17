@@ -5,23 +5,26 @@
 const CONFIG = {
   SAMPLE_RATE: 16000,
   // Adaptive chunking settings
-  CHUNK_DURATION_ACTIVE: 5,   // seconds when room is busy
-  CHUNK_DURATION_IDLE: 7,    // seconds when only one speaker
-  MIN_CHUNK_SIZE: 1,
-  MAX_CHUNK_SIZE: 15,        // hard-cap per chunk
-  SILENCE_THRESHOLD: 0.0003, // more sensitive silence detection
-  SILENCE_TIMEOUT: 2500,
+  CHUNK_DURATION_ACTIVE: 5,   // seconds - optimal for active trading room with multiple speakers
+  CHUNK_DURATION_IDLE: 7,    // seconds - longer chunks when only one speaker for better context
+  MIN_CHUNK_SIZE: 1,          // seconds - minimum audio length before processing
+  MAX_CHUNK_SIZE: 15,        // seconds - hard-cap per chunk to prevent oversized API calls
+  SILENCE_THRESHOLD: 0.0003, // amplitude - tuned for trading room acoustics and background noise
+  SILENCE_TIMEOUT: 2500,     // milliseconds - how long to wait before considering speech ended
   // Speaker merging settings
-  SPEAKER_MERGE_WINDOW: 5000,
-  ACTIVITY_WINDOW: 5000,
-  ACTIVITY_THRESHOLD: 2,
+  SPEAKER_MERGE_WINDOW: 5000, // milliseconds - window for merging consecutive speech from same speaker
+  ACTIVITY_WINDOW: 5000,      // milliseconds - window for tracking recent activity levels
+  ACTIVITY_THRESHOLD: 2,      // number of speakers - threshold for considering room "busy"
   // Processing settings
-  MAX_CONCURRENT_PROCESSING: 4,
+  MAX_CONCURRENT_PROCESSING: 4, // maximum simultaneous API calls to prevent rate limiting
   // Minimum seconds to collect before sending the very first chunk for a speaker
-  STARTUP_MIN_DURATION: 2,
+  STARTUP_MIN_DURATION: 2,    // seconds - initial buffer time for better speech detection
   // Watchdog settings
-  STALL_IDLE_THRESHOLD: 3000,   // ms of inactivity before forcing flush
-  STALL_MIN_DURATION: 1         // s – only flush if we have at least this much audio
+  STALL_IDLE_THRESHOLD: 3000, // milliseconds - inactivity threshold before forcing buffer flush
+  STALL_MIN_DURATION: 1,      // seconds - only flush if we have at least this much audio
+  // Memory management
+  MAX_TRANSCRIPTIONS: 10000,   // maximum transcriptions to keep in memory for very long sessions
+  TRANSCRIPTION_CLEANUP_KEEP: 8000 // number of recent transcriptions to keep when cleaning up
 };
 
 // Store audio chunks and transcriptions
@@ -29,6 +32,16 @@ let audioChunks = [];
 let isCapturing = false;
 let transcriptions = [];
 let apiKey = null;
+
+// Performance monitoring
+const performanceMetrics = {
+  apiCalls: 0,
+  totalResponseTime: 0,
+  avgResponseTime: 0,
+  errorCount: 0,
+  errorRate: 0,
+  lastReset: Date.now()
+};
 
 // Enhanced buffering state
 const speakerBuffers = new Map(); 
@@ -155,7 +168,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         bufferDuration: (totalBufferSize / CONFIG.SAMPLE_RATE).toFixed(2),
         activeSpeakers: speakerBuffers.size,
         isProcessing: processingQueue.size > 0,
-        speechActivity: getActivityLevel()
+        speechActivity: getActivityLevel(),
+        performance: {
+          apiCalls: performanceMetrics.apiCalls,
+          avgResponseTime: Math.round(performanceMetrics.avgResponseTime),
+          errorRate: Math.round(performanceMetrics.errorRate * 100)
+        }
       };
       console.log('[VTF Background] Status request:', status);
       sendResponse(status);
@@ -405,7 +423,16 @@ async function processSpeakerBuffer(streamId, reason) {
     }
     
   } catch (error) {
-    console.error(`[VTF Background] Processing error for ${speakerName}:`, error);
+    console.error(`[VTF Background] Processing error for speaker ${speakerName} (${streamId}), buffer size: ${chunk.length} samples, reason: ${reason}:`, error);
+    
+    // Clean up failed processing
+    processingQueue.delete(streamId);
+    
+    // Send error notification to UI if available
+    updateBufferStatus();
+    
+    // Continue processing other speakers
+    return null;
   } finally {
     processingQueue.delete(streamId);
     updateBufferStatus();
@@ -599,7 +626,8 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
 
 // Process audio chunk with Whisper API
 async function processAudioChunk(audioData, timestamp, streamId) {
-  console.log('[VTF Background] Processing audio chunk for transcription...');
+  const startTime = Date.now();
+  performanceMetrics.apiCalls++;
   
   if (!apiKey) {
     console.error('[VTF Background] No API key available, attempting to reload...');
@@ -610,6 +638,8 @@ async function processAudioChunk(audioData, timestamp, streamId) {
       console.log('[VTF Background] API key reloaded from local storage');
     } else {
       console.error('[VTF Background] No API key in local storage');
+      performanceMetrics.errorCount++;
+      updatePerformanceMetrics();
       return null;
     }
   }
@@ -654,6 +684,11 @@ async function processAudioChunk(audioData, timestamp, streamId) {
         streamId: streamId
       };
       
+      // Track successful response time
+      const responseTime = Date.now() - startTime;
+      performanceMetrics.totalResponseTime += responseTime;
+      updatePerformanceMetrics();
+      
       return transcription;
     } else {
       console.log('[VTF Background] No text in transcription result');
@@ -661,9 +696,11 @@ async function processAudioChunk(audioData, timestamp, streamId) {
     
     return null;
   } catch (error) {
+    performanceMetrics.errorCount++;
+    updatePerformanceMetrics();
     console.error('[VTF Background] Whisper API error:', error.message);
     console.error('[VTF Background] Full error:', error);
-    return null;
+    throw error;
   }
 }
 
@@ -674,6 +711,13 @@ function assembleConversation(newTranscription) {
   
   // Add to transcriptions without purging
   transcriptions.push(newTranscription);
+  
+  // Optional cleanup for very long sessions to prevent memory issues
+  if (transcriptions.length > CONFIG.MAX_TRANSCRIPTIONS) {
+    const removed = transcriptions.length - CONFIG.TRANSCRIPTION_CLEANUP_KEEP;
+    transcriptions = transcriptions.slice(-CONFIG.TRANSCRIPTION_CLEANUP_KEEP);
+    console.log(`[VTF Background] Memory cleanup: removed ${removed} old transcriptions, keeping ${transcriptions.length}`);
+  }
   
   // Analyze recent conversation flow
   const recentTranscripts = transcriptions.slice(-20); // Last 20 for context
@@ -939,4 +983,10 @@ function updateConversationMetadata(transcript) {
   const recentTranscripts = transcriptions.slice(-10);
   const conversations = groupIntoConversations(recentTranscripts);
   markConversationTypes(conversations);
+}
+
+function updatePerformanceMetrics() {
+  performanceMetrics.avgResponseTime = performanceMetrics.totalResponseTime / performanceMetrics.apiCalls;
+  performanceMetrics.errorRate = performanceMetrics.errorCount / performanceMetrics.apiCalls;
+  performanceMetrics.lastReset = Date.now();
 }

@@ -68,7 +68,7 @@ function handleAudioMessage(event) {
     }
     
     if (DEBUG_CAPTURE) {
-      console.debug(`[Content] Received audio data: ${event.data.audioData.length} samples (peak ${event.data.maxSample.toFixed(5)})`);
+      console.debug(`[Content] Received audio data: ${event.data.audioData.length} samples (peak ${event.data.maxSample?.toFixed(5)}, quality: ${event.data.audioQuality || 'unknown'})`);
     }
     
     chunksSent++;

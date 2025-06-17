@@ -18,6 +18,30 @@
     };
   }
   
+  // Audio quality assessment
+  function assessAudioQuality(audioData) {
+    // Calculate RMS (Root Mean Square) for audio quality assessment
+    const rms = Math.sqrt(audioData.reduce((sum, val) => sum + val * val, 0) / audioData.length);
+    
+    // Assess quality based on RMS and dynamic range
+    const maxSample = Math.max(...audioData.map(Math.abs));
+    const dynamicRange = maxSample / (rms || 0.0001); // Avoid division by zero
+    
+    let quality = 'poor';
+    if (rms > 0.001 && dynamicRange > 2) {
+      quality = 'good';
+    } else if (rms > 0.0005 || dynamicRange > 1.5) {
+      quality = 'fair';
+    }
+    
+    return {
+      quality: quality,
+      rms: rms,
+      dynamicRange: dynamicRange,
+      maxSample: maxSample
+    };
+  }
+  
   // Function to capture audio from an element
   function captureAudioElement(audioElement) {
     const streamId = audioElement.id;
@@ -76,9 +100,12 @@
           const chunk = audioBuffer.slice(0, CHUNK_SIZE);
           audioBuffer = audioBuffer.slice(CHUNK_SIZE);
           
+          // Assess audio quality
+          const qualityInfo = assessAudioQuality(chunk);
+          
           // Debug log
           if (window.VTF_DEBUG_CAPTURE) {
-            console.debug(`[VTF Inject] Sent audio chunk (${chunk.length} samples), peak=${maxSample.toFixed(5)}`);
+            console.debug(`[VTF Inject] Sent audio chunk (${chunk.length} samples), quality=${qualityInfo.quality}, peak=${qualityInfo.maxSample.toFixed(5)}, rms=${qualityInfo.rms.toFixed(6)}`);
           }
           
           // Send to content script via postMessage
@@ -87,7 +114,9 @@
             streamId: streamId,
             audioData: chunk,
             timestamp: Date.now(),
-            maxSample: maxSample
+            maxSample: qualityInfo.maxSample,
+            audioQuality: qualityInfo.quality,
+            rms: qualityInfo.rms
           }, '*');
         }
       }, 'audio processing');

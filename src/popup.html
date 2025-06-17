@@ -1,53 +1,453 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 320px;
+      min-height: 350px;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a1a;
+      color: #ffffff;
+    }
+    
+    .header {
+      background: linear-gradient(135deg, #2c3e50, #34495e);
+      padding: 12px;
+      text-align: center;
+      border-bottom: 1px solid #444;
+    }
+    
+    .header h1 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+    }
+    
+    .status-section {
+      background: #f8f9fa;
+      padding: 12px 16px;
+      border-bottom: 1px solid #444;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .status-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .status-indicator {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #6c757d;
+      margin: 0;
+      position: relative;
+      transition: all 0.3s ease;
+    }
+    
+    .status-indicator.active {
+      background: #dc3545;
+      animation: pulse 1.5s infinite;
+      box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7);
+    }
+    
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
+      70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+    }
+    
+    .status-text {
+      font-size: 14px;
+      font-weight: 600;
+      color: #333;
+      margin: 0;
+    }
+    
+    .status-text.active {
+      color: #dc3545;
+    }
+    
+    .controls {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    
+    .btn-start {
+      background: #28a745;
+      color: white;
+    }
+    
+    .btn-start:hover {
+      background: #218838;
+    }
+    
+    .btn-start.active {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+    
+    .btn-stop {
+      background: #dc3545;
+      color: white;
+    }
+    
+    .btn-stop:hover {
+      background: #c82333;
+    }
+    
+    .dashboard {
+      padding: 14px;
+    }
+    
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    
+    .metric-card {
+      background: #2d3748;
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+      border: 1px solid #4a5568;
+    }
+    
+    .metric-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #4CAF50;
+      margin-bottom: 4px;
+    }
+    
+    .metric-value.warning {
+      color: #ff9800;
+    }
+    
+    .metric-value.error {
+      color: #f44336;
+    }
+    
+    .metric-label {
+      font-size: 10px;
+      color: #a0aec0;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .performance-section {
+      background: #2d3748;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      border: 1px solid #4a5568;
+    }
+    
+    .performance-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #e2e8f0;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .performance-stats {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #a0aec0;
+    }
+    
+    .api-status {
+      background: #2d3748;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      border: 1px solid #4a5568;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .api-status-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #e2e8f0;
+      margin: 0;
+    }
+    
+    .api-key-status {
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      display: inline-block;
+    }
+    
+    .api-key-status.success {
+      background: rgba(76, 175, 80, 0.2);
+      color: #4CAF50;
+    }
+    
+    .api-key-status.error {
+      background: rgba(244, 67, 54, 0.2);
+      color: #f44336;
+    }
+    
+    .btn-test {
+      background: #17a2b8;
+      color: white;
+      padding: 4px 8px;
+      border: none;
+      border-radius: 3px;
+      font-size: 10px;
+      cursor: pointer;
+      margin-left: 8px;
+    }
+    
+    .btn-test:hover {
+      background: #138496;
+    }
+    
+    .activity-monitor {
+      background: #2d3748;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      border: 1px solid #4a5568;
+    }
+    
+    .activity-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #e2e8f0;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .activity-content {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    
+    .activity-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    
+    .activity-label {
+      font-size: 10px;
+      color: #a0aec0;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .activity-value {
+      font-size: 12px;
+      font-weight: 600;
+      color: #4CAF50;
+    }
+    
+    .activity-value.high {
+      color: #4CAF50;
+      animation: pulse-green 2s infinite;
+    }
+    
+    .activity-value.medium {
+      color: #ff9800;
+    }
+    
+    .activity-value.low {
+      color: #2196F3;
+    }
+    
+    .activity-value.none {
+      color: #6c757d;
+    }
+    
+    .activity-value.processing {
+      color: #ff9800;
+      animation: pulse-orange 1.5s infinite;
+    }
+    
+    @keyframes pulse-green {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    
+    @keyframes pulse-orange {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+    
+    .activity-time {
+      font-size: 12px;
+      font-weight: 600;
+      color: #4CAF50;
+    }
+    
+    .activity-time.recent {
+      color: #4CAF50;
+    }
+    
+    .activity-time.old {
+      color: #6c757d;
+    }
+    
+    .current-transcript {
+      grid-column: 1 / -1;
+      margin-top: 6px;
+    }
+    
+    .transcript-preview {
+      background: #4a5568;
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #e2e8f0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-height: 14px;
+      line-height: 1.3;
+    }
+    
+    .transcript-preview.active {
+      background: rgba(76, 175, 80, 0.1);
+      border: 1px solid rgba(76, 175, 80, 0.3);
+      color: #4CAF50;
+    }
+    
+    .transcript-preview.empty {
+      color: #a0aec0;
+      font-style: italic;
+    }
+    
+    .error-message, .success-message {
+      padding: 8px 12px;
+      margin: 6px 14px;
+      border-radius: 4px;
+      font-size: 11px;
+      text-align: center;
+    }
+    
+    .error-message {
+      background: rgba(244, 67, 54, 0.1);
+      color: #f44336;
+      border: 1px solid rgba(244, 67, 54, 0.3);
+    }
+    
+    .success-message {
+      background: rgba(76, 175, 80, 0.1);
+      color: #4CAF50;
+      border: 1px solid rgba(76, 175, 80, 0.3);
+    }
+    
+    .hidden {
+      display: none;
+    }
+  </style>
 </head>
-<body class="popup">
+<body>
   <div class="header">
-    <h1>VTF Audio Capture</h1>
-    <span class="status-indicator" id="statusIndicator"></span>
+    <h1>VTF Capture Dashboard</h1>
   </div>
   
-  <div class="controls">
-    <button id="startBtn" class="btn btn-primary">Start Capture</button>
-    <button id="stopBtn" class="btn btn-primary">Stop Capture</button>
-    <div class="btn-group">
-      <button id="testBtn" class="btn btn-secondary">Test Connection</button>
-      <button id="optionsBtn" class="btn btn-secondary">Options</button>
+  <div class="status-section">
+    <div class="status-info">
+      <div class="status-indicator" id="statusIndicator"></div>
+      <div class="status-text" id="captureStatus">Not Capturing</div>
+    </div>
+    <div class="controls">
+      <button class="btn btn-start" id="startBtn">Start</button>
+      <button class="btn btn-stop" id="stopBtn">Stop</button>
     </div>
   </div>
   
-  <div class="info-section">
-    <div class="info-row">
-      <span class="info-label">Status:</span>
-      <span class="info-value" id="captureStatus">Not Capturing</span>
+  <div class="dashboard">
+    <div class="dashboard-grid">
+      <div class="metric-card">
+        <div class="metric-value" id="chunksCount">0</div>
+        <div class="metric-label">Audio Chunks</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="transcriptionCount">0</div>
+        <div class="metric-label">Transcriptions</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="activeSpeakers">0</div>
+        <div class="metric-label">Active Speakers</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="sessionCost">$0.00</div>
+        <div class="metric-label">Session Cost</div>
+      </div>
     </div>
-    <div class="info-row">
-      <span class="info-label">API Key:</span>
-      <span class="info-value" id="apiKeyStatus">Checking...</span>
+    
+    <div class="performance-section">
+      <div class="performance-title">Performance</div>
+      <div class="performance-stats" id="performanceMetrics">
+        <span>API Calls: 0</span>
+        <span>Avg: 0ms</span>
+        <span>Errors: 0%</span>
+      </div>
     </div>
-    <div class="info-row">
-      <span class="info-label">Audio Chunks:</span>
-      <span class="info-value" id="chunksCount">0</span>
+    
+    <div class="api-status">
+      <div class="api-status-title">API Status</div>
+      <div>
+        <span class="api-key-status error" id="apiKeyStatus">Not configured</span>
+        <button class="btn-test" id="testBtn">Test</button>
+      </div>
     </div>
-    <div class="info-row">
-      <span class="info-label">Transcriptions:</span>
-      <span class="info-value" id="transcriptionCount">0</span>
+    
+    <div class="activity-monitor">
+      <div class="activity-title">Current Activity</div>
+      <div class="activity-content">
+        <div class="activity-row">
+          <span class="activity-label">Speech Activity:</span>
+          <span class="activity-value" id="speechActivity">None</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-label">Processing:</span>
+          <span class="activity-value" id="processingStatus">Idle</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-label">Last Transcription:</span>
+          <span class="activity-time" id="lastTranscription">Never</span>
+        </div>
+        <div class="current-transcript" id="currentTranscript">
+          <div class="transcript-preview">Waiting for audio...</div>
+        </div>
+      </div>
     </div>
   </div>
   
   <div class="error-message hidden" id="errorMessage"></div>
   <div class="success-message hidden" id="successMessage"></div>
-  
-  <div class="transcript-section">
-    <div class="transcript-header">
-      <h2>Recent Transcriptions</h2>
-    </div>
-    <div class="transcript-content" id="transcriptContent">
-      <div class="empty-state">No transcriptions yet. Start capturing to see results.</div>
-    </div>
-  </div>
   
   <script src="popup.js"></script>
 </body>
