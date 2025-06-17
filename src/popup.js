@@ -3,11 +3,11 @@
 // DOM elements
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
-const testBtn = document.getElementById('testBtn');
-const optionsBtn = document.getElementById('optionsBtn');
+const copyBtn = document.getElementById('copyBtn');
+const exportBtn = document.getElementById('exportBtn');
+const dailyExportBtn = document.getElementById('dailyExportBtn');
 const statusIndicator = document.getElementById('statusIndicator');
 const captureStatus = document.getElementById('captureStatus');
-const apiKeyStatus = document.getElementById('apiKeyStatus');
 const chunksCount = document.getElementById('chunksCount');
 const transcriptionCount = document.getElementById('transcriptionCount');
 const activeSpeakers = document.getElementById('activeSpeakers');
@@ -16,13 +16,13 @@ const performanceMetrics = document.getElementById('performanceMetrics');
 const speechActivity = document.getElementById('speechActivity');
 const processingStatus = document.getElementById('processingStatus');
 const lastTranscription = document.getElementById('lastTranscription');
+const audioQuality = document.getElementById('audioQuality');
 const currentTranscript = document.getElementById('currentTranscript');
 const errorMessage = document.getElementById('errorMessage');
 const successMessage = document.getElementById('successMessage');
 
 // State
 let isTranscribing = false;
-let hasApiKey = false;
 let sessionStartTime = null;
 let totalAudioMinutes = 0;
 let lastTranscriptTime = null;
@@ -30,6 +30,34 @@ let currentTranscriptPreview = '';
 
 // Whisper API pricing (as of 2024)
 const WHISPER_COST_PER_MINUTE = 0.006; // $0.006 per minute
+
+// Fallback clipboard function for older browsers or when clipboard API fails
+function fallbackCopyToClipboard(text, count) {
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.style.position = 'fixed';
+  textArea.style.left = '-999999px';
+  textArea.style.top = '-999999px';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  
+  try {
+    const successful = document.execCommand('copy');
+    if (successful) {
+      console.log('[Popup] Fallback copy successful');
+      showSuccess(`Copied ${count} transcriptions to clipboard`);
+    } else {
+      console.error('[Popup] Fallback copy failed');
+      showError('Failed to copy to clipboard');
+    }
+  } catch (err) {
+    console.error('[Popup] Fallback copy error:', err);
+    showError('Failed to copy to clipboard');
+  } finally {
+    document.body.removeChild(textArea);
+  }
+}
 
 // Start capture
 if (startBtn) {
@@ -95,35 +123,194 @@ if (stopBtn) {
   };
 }
 
-// Test connection
-if (testBtn) {
-  testBtn.onclick = async () => {
-    console.log('[Popup] Testing message channel...');
-    showSuccess('Testing connections...');
+// Copy all transcriptions
+if (copyBtn) {
+  copyBtn.onclick = async () => {
+    console.log('[Popup] Copy all button clicked');
     
-    // Test background communication
-    chrome.runtime.sendMessage({
-      type: 'audioData',
-      audioData: new Float32Array(1000).fill(0.5),
-      timestamp: Date.now(),
-      streamId: 'test-stream'
-    }, response => {
-      if (chrome.runtime.lastError) {
-        console.error('Background test failed:', chrome.runtime.lastError);
-        showError('Background connection failed!');
-      } else {
-        console.log('Background test response:', response);
-        showSuccess('Connection test successful!');
+    // Disable button during operation
+    copyBtn.disabled = true;
+    copyBtn.textContent = 'Copying...';
+    
+    chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
+      console.log('[Popup] getTranscriptions response:', response);
+      
+      if (chrome.runtime.lastError || !response || !response.transcriptions) {
+        console.error('[Popup] Error getting transcriptions:', chrome.runtime.lastError);
+        showError('No transcriptions available to copy');
+        copyBtn.disabled = false;
+        copyBtn.textContent = 'Copy All';
+        return;
+      }
+      
+      const transcriptions = response.transcriptions;
+      console.log('[Popup] Found transcriptions:', transcriptions.length);
+      
+      if (transcriptions.length === 0) {
+        showError('No transcriptions available to copy');
+        copyBtn.disabled = false;
+        copyBtn.textContent = 'Copy All';
+        return;
+      }
+      
+      // Format transcriptions as plain text
+      const textContent = transcriptions.map(t => {
+        const timestamp = new Date(t.timestamp).toLocaleTimeString();
+        const speaker = t.speaker || 'Unknown';
+        return `[${timestamp}] ${speaker}: ${t.text}`;
+      }).join('\n');
+      
+      console.log('[Popup] Formatted text content:', textContent.substring(0, 100) + '...');
+      
+      // Copy to clipboard using async function
+      (async () => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          try {
+            await navigator.clipboard.writeText(textContent);
+            console.log('[Popup] Successfully copied to clipboard');
+            showSuccess(`Copied ${transcriptions.length} transcriptions to clipboard`);
+          } catch (err) {
+            console.error('[Popup] Clipboard API failed:', err);
+            // Fallback to legacy method
+            fallbackCopyToClipboard(textContent, transcriptions.length);
+          }
+        } else {
+          console.log('[Popup] Using fallback copy method');
+          fallbackCopyToClipboard(textContent, transcriptions.length);
+        }
+        
+        // Re-enable button
+        copyBtn.disabled = false;
+        copyBtn.textContent = 'Copy All';
+      })();
+    });
+  };
+}
+
+// Export all transcriptions
+if (exportBtn) {
+  exportBtn.onclick = async () => {
+    console.log('[Popup] Export all button clicked');
+    
+    // Disable button during operation
+    exportBtn.disabled = true;
+    exportBtn.textContent = 'Exporting...';
+    
+    chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
+      console.log('[Popup] getTranscriptions response for export:', response);
+      
+      if (chrome.runtime.lastError || !response || !response.transcriptions) {
+        console.error('[Popup] Error getting transcriptions for export:', chrome.runtime.lastError);
+        showError('No transcriptions available to export');
+        exportBtn.disabled = false;
+        exportBtn.textContent = 'Export All';
+        return;
+      }
+      
+      const transcriptions = response.transcriptions;
+      console.log('[Popup] Found transcriptions for export:', transcriptions.length);
+      
+      if (transcriptions.length === 0) {
+        showError('No transcriptions available to export');
+        exportBtn.disabled = false;
+        exportBtn.textContent = 'Export All';
+        return;
+      }
+      
+      // Create markdown content
+      const now = new Date();
+      const dateStr = now.toLocaleDateString();
+      const timeStr = now.toLocaleTimeString();
+      
+      let markdown = `# VTF Transcription Export\n\n`;
+      markdown += `**Date:** ${dateStr}\n`;
+      markdown += `**Time:** ${timeStr}\n`;
+      markdown += `**Total Transcriptions:** ${transcriptions.length}\n\n`;
+      markdown += `---\n\n`;
+      
+      transcriptions.forEach((t, index) => {
+        const timestamp = new Date(t.timestamp).toLocaleTimeString();
+        const speaker = t.speaker || 'Unknown';
+        markdown += `## ${index + 1}. ${speaker} (${timestamp})\n\n`;
+        markdown += `${t.text}\n\n`;
+      });
+      
+      console.log('[Popup] Generated markdown length:', markdown.length);
+      
+      // Create and download file
+      try {
+        const blob = new Blob([markdown], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `vtf-transcriptions-${dateStr.replace(/\//g, '-')}.md`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        console.log('[Popup] Export download triggered successfully');
+        showSuccess(`Exported ${transcriptions.length} transcriptions as markdown`);
+        exportBtn.disabled = false;
+        exportBtn.textContent = 'Export All';
+      } catch (err) {
+        console.error('[Popup] Export failed:', err);
+        showError('Failed to export transcriptions');
+        exportBtn.disabled = false;
+        exportBtn.textContent = 'Export All';
       }
     });
   };
 }
 
-// Open options
-if (optionsBtn) {
-  optionsBtn.onclick = () => {
-    console.log('[Popup] Opening options page');
-    chrome.runtime.openOptionsPage();
+// Daily export - comprehensive markdown for the entire day
+if (dailyExportBtn) {
+  dailyExportBtn.onclick = async () => {
+    console.log('[Popup] Daily export button clicked');
+    
+    // Disable button during operation
+    dailyExportBtn.disabled = true;
+    dailyExportBtn.textContent = 'Generating...';
+    
+    chrome.runtime.sendMessage({type: 'getDailyMarkdown'}, (response) => {
+      console.log('[Popup] getDailyMarkdown response:', response);
+      
+      if (chrome.runtime.lastError || !response || !response.markdown) {
+        console.error('[Popup] Error getting daily markdown:', chrome.runtime.lastError);
+        showError('Failed to generate daily export');
+        dailyExportBtn.disabled = false;
+        dailyExportBtn.textContent = 'Daily Export';
+        return;
+      }
+      
+      const markdown = response.markdown;
+      const date = response.date;
+      
+      console.log('[Popup] Generated daily markdown length:', markdown.length);
+      
+      // Create and download file
+      try {
+        const blob = new Blob([markdown], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `vtf-trading-room-${date}.md`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        console.log('[Popup] Daily export download triggered successfully');
+        showSuccess(`Daily trading room export saved for ${date}`);
+        dailyExportBtn.disabled = false;
+        dailyExportBtn.textContent = 'Daily Export';
+      } catch (err) {
+        console.error('[Popup] Daily export failed:', err);
+        showError('Failed to export daily markdown');
+        dailyExportBtn.disabled = false;
+        dailyExportBtn.textContent = 'Daily Export';
+      }
+    });
   };
 }
 
@@ -133,13 +320,13 @@ function updateStatus(isCapturing) {
   
   if (isCapturing) {
     statusIndicator.classList.add('active');
-    captureStatus.textContent = 'Recording';
+    captureStatus.querySelector('span').textContent = 'Capturing';
     captureStatus.classList.add('active');
     startBtn.disabled = true;
     stopBtn.disabled = false;
   } else {
     statusIndicator.classList.remove('active');
-    captureStatus.textContent = 'Not Capturing';
+    captureStatus.querySelector('span').textContent = 'Not Capturing';
     captureStatus.classList.remove('active');
     startBtn.disabled = false;
     stopBtn.disabled = true;
@@ -158,13 +345,23 @@ function calculateSessionCost(chunks, transcriptions) {
 function updateActivityDisplay(response) {
   // Update speech activity
   const activity = response.speechActivity || 'none';
+  speechActivity.className = `vtf-activity-value ${activity}`;
   speechActivity.textContent = activity.charAt(0).toUpperCase() + activity.slice(1);
-  speechActivity.className = `activity-value ${activity}`;
   
   // Update processing status
   const isProcessing = response.isProcessing || false;
+  processingStatus.className = isProcessing ? 'vtf-activity-value processing' : 'vtf-activity-value none';
   processingStatus.textContent = isProcessing ? 'Active' : 'Idle';
-  processingStatus.className = isProcessing ? 'activity-value processing' : 'activity-value none';
+  
+  // Update audio quality
+  if (response.audioQuality) {
+    const quality = response.audioQuality.toLowerCase();
+    audioQuality.className = `vtf-activity-value ${quality}`;
+    audioQuality.textContent = quality.charAt(0).toUpperCase() + quality.slice(1);
+  } else {
+    audioQuality.className = 'vtf-activity-value none';
+    audioQuality.textContent = 'Unknown';
+  }
   
   // Update last transcription time
   if (response.transcriptionCount > 0) {
@@ -176,10 +373,10 @@ function updateActivityDisplay(response) {
     const timeSinceLastTranscript = now - lastTranscriptTime.time;
     const timeText = formatTimeSince(timeSinceLastTranscript);
     lastTranscription.textContent = timeText;
-    lastTranscription.className = timeSinceLastTranscript < 30000 ? 'activity-time recent' : 'activity-time old';
+    lastTranscription.className = timeSinceLastTranscript < 30000 ? 'vtf-activity-value recent' : 'vtf-activity-value old';
   } else {
     lastTranscription.textContent = 'Never';
-    lastTranscription.className = 'activity-time old';
+    lastTranscription.className = 'vtf-activity-value old';
   }
 }
 
@@ -205,13 +402,13 @@ function updateTranscriptPreview() {
       const speaker = latest.speaker || 'Unknown';
       
       currentTranscript.innerHTML = `
-        <div class="transcript-preview active">
+        <div class="vtf-transcript-preview active">
           <strong>${speaker}:</strong> ${preview}
         </div>
       `;
     } else {
       currentTranscript.innerHTML = `
-        <div class="transcript-preview empty">
+        <div class="vtf-transcript-preview empty">
           Waiting for audio...
         </div>
       `;
@@ -242,28 +439,15 @@ function checkStatus() {
       
       // Color code the cost
       if (cost > 1.0) {
-        sessionCost.className = 'metric-value error';
+        sessionCost.className = 'vtf-metric-value danger';
       } else if (cost > 0.5) {
-        sessionCost.className = 'metric-value warning';
+        sessionCost.className = 'vtf-metric-value warning';
       } else {
-        sessionCost.className = 'metric-value';
+        sessionCost.className = 'vtf-metric-value';
       }
       
       // Update activity display
       updateActivityDisplay(response);
-      
-      // Update API key status
-      if (response.hasApiKey) {
-        apiKeyStatus.textContent = 'API Key Configured';
-        apiKeyStatus.classList.add('success');
-        apiKeyStatus.classList.remove('error');
-        hasApiKey = true;
-      } else {
-        apiKeyStatus.textContent = 'API Key Required';
-        apiKeyStatus.classList.remove('success');
-        apiKeyStatus.classList.add('error');
-        hasApiKey = false;
-      }
       
       // Update performance metrics if available
       if (response.performance) {
@@ -283,32 +467,22 @@ function checkStatus() {
 // Show error message
 function showError(message) {
   errorMessage.textContent = message;
-  errorMessage.classList.remove('hidden');
-  successMessage.classList.add('hidden');
+  errorMessage.classList.remove('vtf-hidden');
+  successMessage.classList.add('vtf-hidden');
   setTimeout(() => {
-    errorMessage.classList.add('hidden');
+    errorMessage.classList.add('vtf-hidden');
   }, 5000);
 }
 
 // Show success message
 function showSuccess(message) {
   successMessage.textContent = message;
-  successMessage.classList.remove('hidden');
-  errorMessage.classList.add('hidden');
+  successMessage.classList.remove('vtf-hidden');
+  errorMessage.classList.add('vtf-hidden');
   setTimeout(() => {
-    successMessage.classList.add('hidden');
+    successMessage.classList.add('vtf-hidden');
   }, 3000);
 }
-
-// Check API key on load
-chrome.storage.local.get(['openaiApiKey'], (result) => {
-  hasApiKey = !!(result.openaiApiKey && result.openaiApiKey.trim());
-  
-  if (!hasApiKey) {
-    showError('No API key configured. Click Options to set it up.');
-    startBtn.disabled = true;
-  }
-});
 
 // Initial status check
 checkStatus();

@@ -5,39 +5,34 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="header">
-    <h1>VTF Audio Extension Settings</h1>
-  </div>
-  
-  <div class="option-group">
-    <div class="option-row">
-      <div class="option-label">
-        <h3>OpenAI API Key</h3>
-        <p>Enter your OpenAI API key to enable transcription. Your key is stored locally and never displayed for security. Only you can see what you type.</p>
+  <div class="vtf-container">
+    <div class="vtf-header">
+      <h1>VTF Audio Extension Settings</h1>
+    </div>
+    
+    <div class="vtf-section">
+      <h3 class="vtf-section-title">OpenAI API Key</h3>
+      <p class="vtf-mb-4">Enter your OpenAI API key to enable transcription. Your key is stored locally and never displayed for security.</p>
+      
+      <input type="password" id="apiKey" class="vtf-input vtf-mb-3" placeholder="Enter your OpenAI API key" required>
+      
+      <div class="vtf-grid vtf-grid-2">
+        <button type="submit" class="vtf-btn vtf-btn-primary">Save API Key</button>
+        <button type="button" id="testApiKey" class="vtf-btn vtf-btn-success">Test API Key</button>
       </div>
+      
+      <div class="vtf-message vtf-hidden" id="saveStatus"></div>
     </div>
-    <div class="option-row">
-      <input type="password" id="apiKey" placeholder="Enter your OpenAI API key" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+    
+    <div class="vtf-section">
+      <h3 class="vtf-section-title">About</h3>
+      <p>This extension captures and transcribes audio from Virtual Trading Floor sessions using OpenAI's Whisper API.</p>
+      <p class="vtf-mt-3">Get your API key at: <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a></p>
     </div>
-    <div class="option-row">
-      <button type="submit" style="background: #007cba; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; margin-right: 10px;">Save API Key</button>
-      <button type="button" id="testApiKey" style="background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">Test API Key</button>
+    
+    <div class="vtf-text-center vtf-text-muted vtf-mt-4">
+      <p>VTF Audio Transcription Extension</p>
     </div>
-    <div class="save-status" id="saveStatus"></div>
-  </div>
-  
-  <div class="option-group">
-    <div class="option-row">
-      <div class="option-label">
-        <h3>About</h3>
-        <p>This extension captures and transcribes audio from Virtual Trading Floor sessions using OpenAI's Whisper API.</p>
-        <p style="margin-top: 10px;">Get your API key at: <a href="https://platform.openai.com/api-keys" target="_blank" style="color: var(--primary);">OpenAI Platform</a></p>
-      </div>
-    </div>
-  </div>
-  
-  <div class="footer">
-    <p>VTF Audio Transcription Extension</p>
   </div>
   
   <script src="options.js"></script>

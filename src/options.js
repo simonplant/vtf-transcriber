@@ -130,7 +130,8 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('[Options] Status:', type, message);
     
     saveStatus.textContent = message;
-    saveStatus.className = 'save-status show';
+    saveStatus.className = 'vtf-message vtf-message-' + type;
+    saveStatus.classList.remove('vtf-hidden');
     
     if (type === 'error') {
       saveStatus.style.color = 'var(--danger)';
@@ -143,7 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     setTimeout(() => {
-      saveStatus.classList.remove('show');
+      saveStatus.classList.add('vtf-hidden');
     }, 3000);
   }
   
