@@ -13,29 +13,17 @@
     <div class="option-row">
       <div class="option-label">
         <h3>OpenAI API Key</h3>
-        <p>Your API key for Whisper transcription service</p>
+        <p>Enter your OpenAI API key to enable transcription. Your key is stored locally and never displayed for security. Only you can see what you type.</p>
       </div>
     </div>
     <div class="option-row">
-      <input type="password" id="apiKey" placeholder="sk-..." style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+      <input type="password" id="apiKey" placeholder="Enter your OpenAI API key" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
     </div>
     <div class="option-row">
-      <button id="saveBtn" class="btn btn-primary" style="width: 100%;">Save API Key</button>
+      <button type="submit" style="background: #007cba; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; margin-right: 10px;">Save API Key</button>
+      <button type="button" id="testApiKey" style="background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">Test API Key</button>
     </div>
     <div class="save-status" id="saveStatus"></div>
-  </div>
-  
-  <div class="option-group">
-    <div class="option-row">
-      <div class="option-label">
-        <h3>Show Password</h3>
-        <p>Toggle to show/hide your API key</p>
-      </div>
-      <label class="toggle-switch">
-        <input type="checkbox" id="toggleVisibility">
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
   </div>
   
   <div class="option-group">

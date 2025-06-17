@@ -301,12 +301,22 @@ function createTranscriptionDisplay() {
         background: rgba(255, 255, 255, 0.1);
         border: 1px solid rgba(255, 255, 255, 0.2);
         color: #fff;
-        padding: 2px 8px;
+        padding: 2px 6px;
         border-radius: 3px;
         font-size: 10px;
         cursor: pointer;
-        margin-left: auto;
+        margin-right: 4px;
       ">Export</button>
+      <button id="vtf-daily-export-btn" style="
+        background: rgba(33, 150, 243, 0.2);
+        border: 1px solid rgba(33, 150, 243, 0.4);
+        color: #2196F3;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 10px;
+        cursor: pointer;
+        font-weight: 500;
+      ">Daily MD</button>
     </div>
   `;
   display.appendChild(header);
@@ -383,6 +393,34 @@ function createTranscriptionDisplay() {
       animation: fadeIn 0.3s ease;
     }
     
+    .vtf-transcript-entry.soliloquy {
+      border-left-color: #FF9800;
+      background: rgba(255, 152, 0, 0.05);
+    }
+    
+    .vtf-transcript-entry.group_discussion {
+      border-left-color: #9C27B0;
+      background: rgba(156, 39, 176, 0.05);
+    }
+    
+    .vtf-conversation-type {
+      font-size: 9px;
+      padding: 1px 4px;
+      border-radius: 2px;
+      margin-left: 4px;
+      font-weight: 500;
+    }
+    
+    .vtf-conversation-type.soliloquy {
+      background: rgba(255, 152, 0, 0.2);
+      color: #FF9800;
+    }
+    
+    .vtf-conversation-type.group_discussion {
+      background: rgba(156, 39, 176, 0.2);
+      color: #9C27B0;
+    }
+    
     @keyframes fadeIn {
       from { 
         opacity: 0;
@@ -400,6 +438,11 @@ function createTranscriptionDisplay() {
   const exportBtn = document.getElementById('vtf-export-btn');
   if (exportBtn) {
     exportBtn.onclick = exportTranscripts;
+  }
+  
+  const dailyExportBtn = document.getElementById('vtf-daily-export-btn');
+  if (dailyExportBtn) {
+    dailyExportBtn.onclick = exportDailyMarkdown;
   }
   
   document.body.appendChild(display);
@@ -457,10 +500,19 @@ function displayTranscription(transcription, merged = false) {
       const time = new Date(transcription.timestamp).toLocaleTimeString();
       const duration = transcription.duration ? `(${transcription.duration.toFixed(1)}s)` : '';
       
+      // Add conversation type styling
+      const conversationType = transcription.conversationType || 'exchange';
+      entry.classList.add(conversationType);
+      
+      const typeLabel = getConversationTypeLabel(conversationType);
+      
       entry.innerHTML = `
-        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
           <span style="color: #888; font-size: 11px;">${time}</span>
-          <span style="color: #4CAF50; font-size: 11px; font-weight: 500;">${speakerName} ${duration}</span>
+          <div style="display: flex; align-items: center;">
+            <span style="color: #4CAF50; font-size: 11px; font-weight: 500;">${speakerName} ${duration}</span>
+            ${typeLabel ? `<span class="vtf-conversation-type ${conversationType}">${typeLabel}</span>` : ''}
+          </div>
         </div>
         <div class="vtf-transcript-text" style="color: #fff; line-height: 1.4;">${transcription.text}</div>
       `;
@@ -473,8 +525,8 @@ function displayTranscription(transcription, merged = false) {
         timestamp: transcription.timestamp
       });
       
-      // Keep only last 50 transcriptions in display
-      while (content.children.length > 50) {
+      // Keep only last 100 transcriptions in display (increased for full day capture)
+      while (content.children.length > 100) {
         const removed = content.removeChild(content.lastChild);
         // Clean up stored references
         lastTranscripts.forEach((value, key) => {
@@ -654,5 +706,64 @@ function exportTranscripts() {
     URL.revokeObjectURL(url);
     
     console.log(`[Content] Exported ${transcripts.length} transcriptions`);
+  });
+}
+
+function getConversationTypeLabel(type) {
+  switch (type) {
+    case 'soliloquy': return 'SOLO';
+    case 'group_discussion': return 'GROUP';
+    default: return '';
+  }
+}
+
+// Export daily markdown
+function exportDailyMarkdown() {
+  chrome.runtime.sendMessage({type: 'getDailyMarkdown'}, (response) => {
+    if (chrome.runtime.lastError || !response || !response.markdown) {
+      console.error('[Content] Failed to get daily markdown');
+      alert('Failed to generate daily markdown export');
+      return;
+    }
+    
+    const markdown = response.markdown;
+    const date = response.date;
+    
+    // Create and download file
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vtf-trading-room-${date}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    console.log(`[Content] Exported daily markdown for ${date}`);
+    
+    // Show success notification
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: rgba(33, 150, 243, 0.9);
+      color: white;
+      padding: 12px 20px;
+      border-radius: 6px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 14px;
+      z-index: 10001;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    `;
+    notification.textContent = `Daily markdown exported for ${date}`;
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.parentNode.removeChild(notification);
+      }
+    }, 3000);
   });
 }

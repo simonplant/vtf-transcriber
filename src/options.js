@@ -2,47 +2,27 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   const apiKeyInput = document.getElementById('apiKey');
-  const saveBtn = document.getElementById('saveBtn');
+  const saveBtn = document.querySelector('button[type="submit"]');
+  const testBtn = document.getElementById('testApiKey');
   const saveStatus = document.getElementById('saveStatus');
-  const toggleVisibility = document.getElementById('toggleVisibility');
   
   console.log('[Options] DOM loaded, elements found:', {
     apiKeyInput: !!apiKeyInput,
     saveBtn: !!saveBtn,
-    saveStatus: !!saveStatus,
-    toggleVisibility: !!toggleVisibility
+    testBtn: !!testBtn,
+    saveStatus: !!saveStatus
   });
   
-  // Load current API key status from secure session storage
-  chrome.storage.session.get(['openaiApiKey'], (result) => {
+  // Check if API key exists without retrieving it
+  chrome.storage.local.get(['openaiApiKey'], (result) => {
     if (result.openaiApiKey && result.openaiApiKey.trim()) {
-      // Show masked key
-      const masked = result.openaiApiKey.substring(0, 8) + '...' + result.openaiApiKey.slice(-4);
-      apiKeyInput.value = masked;
-      apiKeyInput.placeholder = 'API key is configured';
-      showStatus('API key is configured (secure session storage)', 'success');
+      apiKeyInput.placeholder = 'API key is configured - enter new key to replace';
+      showStatus('API key is configured', 'success');
     } else {
-      // Check if there's an old key in local storage to migrate
-      chrome.storage.local.get(['openaiApiKey'], (localResult) => {
-        if (localResult.openaiApiKey && localResult.openaiApiKey.trim()) {
-          showStatus('API key found in local storage - will be migrated to secure storage on next use', 'warning');
-        } else {
-          showStatus('No API key configured', 'error');
-        }
-      });
+      apiKeyInput.placeholder = 'Enter your OpenAI API key';
+      showStatus('No API key configured', 'error');
     }
   });
-  
-  // Toggle password visibility
-  if (toggleVisibility) {
-    toggleVisibility.addEventListener('change', () => {
-      if (toggleVisibility.checked) {
-        apiKeyInput.type = 'text';
-      } else {
-        apiKeyInput.type = 'password';
-      }
-    });
-  }
   
   // Save settings
   if (saveBtn) {
@@ -95,7 +75,55 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         });
       });
+      
+      // Clear the input field after saving for security
+      apiKeyInput.value = '';
+      apiKeyInput.placeholder = 'API key saved - enter new key to replace';
     });
+  }
+  
+  // Test API key button
+  if (testBtn) {
+    testBtn.addEventListener('click', async () => {
+      const keyToTest = apiKeyInput.value.trim();
+      
+      if (!keyToTest) {
+        // Test existing stored key
+        const result = await chrome.storage.local.get(['openaiApiKey']);
+        if (!result.openaiApiKey) {
+          showStatus('No API key to test', 'error');
+          return;
+        }
+        await testApiKey(result.openaiApiKey);
+      } else {
+        // Test the key being entered
+        await testApiKey(keyToTest);
+      }
+    });
+  }
+  
+  async function testApiKey(apiKey) {
+    showStatus('Testing API key...', 'info');
+    
+    try {
+      const response = await fetch('https://api.openai.com/v1/models', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (response.ok) {
+        showStatus('API key is valid and working!', 'success');
+      } else if (response.status === 401) {
+        showStatus('API key is invalid or expired', 'error');
+      } else {
+        showStatus(`API test failed: ${response.status} ${response.statusText}`, 'error');
+      }
+    } catch (error) {
+      showStatus(`Network error testing API key: ${error.message}`, 'error');
+    }
   }
   
   function showStatus(message, type) {
@@ -108,6 +136,8 @@ document.addEventListener('DOMContentLoaded', () => {
       saveStatus.style.color = 'var(--danger)';
     } else if (type === 'warning') {
       saveStatus.style.color = 'var(--warning)';
+    } else if (type === 'info') {
+      saveStatus.style.color = 'var(--info)';
     } else {
       saveStatus.style.color = 'var(--success)';
     }

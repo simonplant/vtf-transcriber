@@ -45,25 +45,13 @@ const LOG = { level: 'info' };
 function dbg(...msg){ if (LOG.level==='debug') console.log(...msg); }
 function info(...msg){ if (LOG.level!=='silent') console.log(...msg); }
 
-// Load API key from secure storage (session storage is encrypted)
-chrome.storage.session.get(['openaiApiKey'], (result) => {
+// Load API key from local storage
+chrome.storage.local.get(['openaiApiKey'], (result) => {
   if (result.openaiApiKey) {
     apiKey = result.openaiApiKey;
-    console.log('[VTF Background] API key loaded from secure session storage');
+    console.log('[VTF Background] API key loaded from local storage');
   } else {
-    // Try to migrate from local storage
-    chrome.storage.local.get(['openaiApiKey'], (localResult) => {
-      if (localResult.openaiApiKey) {
-        apiKey = localResult.openaiApiKey;
-        // Move to secure session storage
-        chrome.storage.session.set({ openaiApiKey: apiKey }, () => {
-          chrome.storage.local.remove(['openaiApiKey']);
-          console.log('[VTF Background] API key migrated to secure session storage');
-        });
-      } else {
-        console.warn('[VTF Background] No API key found in storage');
-      }
-    });
+    console.warn('[VTF Background] No API key found in storage');
   }
 });
 
@@ -180,18 +168,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true;
     }
     
+    if (request.type === 'getDailyMarkdown') {
+      const targetDate = request.date ? new Date(request.date) : new Date();
+      const markdown = generateDailyMarkdown(targetDate);
+      sendResponse({ markdown, date: targetDate.toISOString().split('T')[0] });
+      return true;
+    }
+    
     if (request.type === 'setApiKey') {
       console.log('[VTF Background] Received setApiKey request');
       apiKey = request.apiKey;
-      // Use secure session storage (encrypted by Chrome)
-      chrome.storage.session.set({ openaiApiKey: apiKey }, () => {
+      // Store API key in local storage
+      chrome.storage.local.set({ openaiApiKey: apiKey }, () => {
         if (chrome.runtime.lastError) {
           console.error('[VTF Background] Error saving API key:', chrome.runtime.lastError);
           sendResponse({ status: 'error', error: chrome.runtime.lastError.message });
         } else {
-          // Remove old local storage key if it exists
-          chrome.storage.local.remove(['openaiApiKey']);
-          console.log('[VTF Background] API key saved to secure session storage');
+          console.log('[VTF Background] API key saved to local storage');
           sendResponse({ status: 'saved' });
         }
       });
@@ -380,9 +373,15 @@ async function processSpeakerBuffer(streamId, reason) {
       
       if (shouldMerge) {
         mergeTranscript(streamId, result);
+        // Update the merged transcript with conversation metadata
+        const lastTranscript = transcriptions[transcriptions.length - 1];
+        if (lastTranscript) {
+          updateConversationMetadata(lastTranscript);
+        }
       } else {
-        // Add as new transcript
-        transcriptions.push(result);
+        // Store transcriptions with conversation assembly
+        assembleConversation(result);
+        // Update speaker pending transcripts for merging
         speakerData.pendingTranscripts = [result];
       }
       
@@ -604,13 +603,13 @@ async function processAudioChunk(audioData, timestamp, streamId) {
   
   if (!apiKey) {
     console.error('[VTF Background] No API key available, attempting to reload...');
-    // Try to reload API key from secure session storage
-    const result = await chrome.storage.session.get(['openaiApiKey']);
+    // Try to reload API key from local storage
+    const result = await chrome.storage.local.get(['openaiApiKey']);
     if (result.openaiApiKey) {
       apiKey = result.openaiApiKey;
-      console.log('[VTF Background] API key reloaded from secure session storage');
+      console.log('[VTF Background] API key reloaded from local storage');
     } else {
-      console.error('[VTF Background] No API key in secure storage');
+      console.error('[VTF Background] No API key in local storage');
       return null;
     }
   }
@@ -655,11 +654,6 @@ async function processAudioChunk(audioData, timestamp, streamId) {
         streamId: streamId
       };
       
-      // Store transcriptions with smart cleanup
-      transcriptions = cleanupTranscriptions(transcriptions);
-      
-      console.log('[VTF Background] Transcription added:', transcription.text);
-      
       return transcription;
     } else {
       console.log('[VTF Background] No text in transcription result');
@@ -673,23 +667,175 @@ async function processAudioChunk(audioData, timestamp, streamId) {
   }
 }
 
-// Memory management functions
-function cleanupTranscriptions(transcriptions) {
-  const MAX_TRANSCRIPTIONS = 1000;
-  const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-  const now = Date.now();
+// Conversation assembly and post-processing
+function assembleConversation(newTranscription) {
+  const CONVERSATION_GAP_MS = 10000; // 10 seconds gap = new conversation
+  const SOLILOQUY_MIN_DURATION = 15000; // 15 seconds = soliloquy
   
-  // Remove old transcriptions first
-  let cleaned = transcriptions.filter(t => (now - t.timestamp) < MAX_AGE_MS);
+  // Add to transcriptions without purging
+  transcriptions.push(newTranscription);
   
-  // If still too many, keep only the most recent
-  if (cleaned.length > MAX_TRANSCRIPTIONS) {
-    const removed = cleaned.length - MAX_TRANSCRIPTIONS;
-    cleaned = cleaned.slice(-MAX_TRANSCRIPTIONS);
-    dbg(`[VTF Background] Cleaned ${removed} old transcriptions`);
+  // Analyze recent conversation flow
+  const recentTranscripts = transcriptions.slice(-20); // Last 20 for context
+  const conversations = groupIntoConversations(recentTranscripts);
+  
+  // Mark conversation types
+  markConversationTypes(conversations);
+  
+  return newTranscription;
+}
+
+function groupIntoConversations(transcripts) {
+  const conversations = [];
+  let currentConversation = [];
+  
+  for (let i = 0; i < transcripts.length; i++) {
+    const transcript = transcripts[i];
+    const prevTranscript = i > 0 ? transcripts[i - 1] : null;
+    
+    // Start new conversation if gap > 10s or different day
+    if (prevTranscript) {
+      const timeDiff = transcript.timestamp - prevTranscript.timestamp;
+      const dayDiff = new Date(transcript.timestamp).getDate() !== new Date(prevTranscript.timestamp).getDate();
+      
+      if (timeDiff > 10000 || dayDiff) {
+        if (currentConversation.length > 0) {
+          conversations.push([...currentConversation]);
+          currentConversation = [];
+        }
+      }
+    }
+    
+    currentConversation.push(transcript);
   }
   
-  return cleaned;
+  if (currentConversation.length > 0) {
+    conversations.push(currentConversation);
+  }
+  
+  return conversations;
+}
+
+function markConversationTypes(conversations) {
+  conversations.forEach(conversation => {
+    if (conversation.length === 0) return;
+    
+    const speakers = [...new Set(conversation.map(t => t.speaker))];
+    const duration = conversation[conversation.length - 1].timestamp - conversation[0].timestamp;
+    
+    let type = 'exchange';
+    if (speakers.length === 1 && duration > 15000) {
+      type = 'soliloquy';
+    } else if (speakers.length > 2) {
+      type = 'group_discussion';
+    }
+    
+    // Add metadata to each transcript in conversation
+    conversation.forEach(t => {
+      t.conversationType = type;
+      t.conversationSpeakers = speakers;
+      t.conversationDuration = duration;
+    });
+  });
+}
+
+// Generate daily markdown export
+function generateDailyMarkdown(targetDate = null) {
+  const date = targetDate || new Date();
+  const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
+  
+  // Filter transcripts for the target date
+  const dayTranscripts = transcriptions.filter(t => {
+    const transcriptDate = new Date(t.timestamp).toISOString().split('T')[0];
+    return transcriptDate === dateStr;
+  });
+  
+  if (dayTranscripts.length === 0) {
+    return `# VTF Trading Room - ${dateStr}\n\n*No transcriptions recorded for this date.*`;
+  }
+  
+  // Group into conversations
+  const conversations = groupIntoConversations(dayTranscripts);
+  markConversationTypes(conversations);
+  
+  let markdown = `# VTF Trading Room - ${date.toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  })}\n\n`;
+  
+  markdown += `**Session Summary:**\n`;
+  markdown += `- Total Conversations: ${conversations.length}\n`;
+  markdown += `- Total Transcripts: ${dayTranscripts.length}\n`;
+  markdown += `- Session Duration: ${formatDuration(dayTranscripts[dayTranscripts.length - 1].timestamp - dayTranscripts[0].timestamp)}\n`;
+  markdown += `- Speakers: ${[...new Set(dayTranscripts.map(t => t.speaker))].join(', ')}\n\n`;
+  
+  markdown += `---\n\n`;
+  
+  // Process each conversation
+  conversations.forEach((conversation, index) => {
+    const startTime = new Date(conversation[0].timestamp);
+    const endTime = new Date(conversation[conversation.length - 1].timestamp);
+    const type = conversation[0].conversationType;
+    const speakers = conversation[0].conversationSpeakers;
+    
+    // Conversation header
+    markdown += `## ${getConversationTitle(type, speakers)} - ${startTime.toLocaleTimeString()}\n\n`;
+    
+    if (type === 'soliloquy') {
+      markdown += `*${speakers[0]} speaking for ${formatDuration(endTime - startTime)}*\n\n`;
+    } else {
+      markdown += `*${speakers.join(' & ')} - ${formatDuration(endTime - startTime)}*\n\n`;
+    }
+    
+    // Process transcripts in conversation
+    conversation.forEach(transcript => {
+      const time = new Date(transcript.timestamp).toLocaleTimeString();
+      const duration = transcript.duration ? ` *(${transcript.duration.toFixed(1)}s)*` : '';
+      
+      if (type === 'soliloquy') {
+        // For soliloquies, just show the text without repeated speaker names
+        markdown += `${transcript.text} `;
+      } else {
+        // For conversations, show speaker names
+        markdown += `**${transcript.speaker}** *(${time})*${duration}: ${transcript.text}\n\n`;
+      }
+    });
+    
+    if (type === 'soliloquy') {
+      markdown += `\n\n`;
+    }
+    
+    markdown += `---\n\n`;
+  });
+  
+  return markdown;
+}
+
+function getConversationTitle(type, speakers) {
+  switch (type) {
+    case 'soliloquy':
+      return `${speakers[0]}'s Analysis`;
+    case 'group_discussion':
+      return `Group Discussion`;
+    default:
+      return `${speakers.join(' & ')} Exchange`;
+  }
+}
+
+function formatDuration(ms) {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes % 60}m`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`;
+  } else {
+    return `${seconds}s`;
+  }
 }
 
 function cleanupSpeakerBuffers() {
@@ -737,8 +883,7 @@ function getMemoryStats() {
 
 // Periodic cleanup and maintenance
 setInterval(() => {
-  // Memory cleanup
-  transcriptions = cleanupTranscriptions(transcriptions);
+  // Memory cleanup (only speaker buffers, keep all transcriptions)
   cleanupSpeakerBuffers();
   
   // Process any remaining audio if capture is active and buffer has been sitting
@@ -788,3 +933,10 @@ setInterval(() => {
 
 // Log when service worker starts
 console.log('[VTF Background] Service worker started at', new Date().toISOString());
+
+function updateConversationMetadata(transcript) {
+  // Quick analysis for single transcript
+  const recentTranscripts = transcriptions.slice(-10);
+  const conversations = groupIntoConversations(recentTranscripts);
+  markConversationTypes(conversations);
+}
