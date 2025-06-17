@@ -45,7 +45,7 @@
         const maxSample = Math.max(...inputData.map(Math.abs));
         
         // Only process if we have real audio
-        if (maxSample > 0.001) {
+        if (maxSample > 0.0003) {
           audioBuffer.push(...inputData);
           
           if (audioBuffer.length >= CHUNK_SIZE) {

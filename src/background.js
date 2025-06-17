@@ -5,18 +5,20 @@
 const CONFIG = {
   SAMPLE_RATE: 16000,
   // Adaptive chunking settings
-  CHUNK_DURATION_ACTIVE: 8,
-  CHUNK_DURATION_IDLE: 10,
-  MIN_CHUNK_SIZE: 3,
-  MAX_CHUNK_SIZE: 30,
-  SILENCE_THRESHOLD: 0.001,
-  SILENCE_TIMEOUT: 3000,
+  CHUNK_DURATION_ACTIVE: 5,   // seconds when room is busy
+  CHUNK_DURATION_IDLE: 7,    // seconds when only one speaker
+  MIN_CHUNK_SIZE: 1,
+  MAX_CHUNK_SIZE: 15,        // hard-cap per chunk
+  SILENCE_THRESHOLD: 0.0003, // more sensitive silence detection
+  SILENCE_TIMEOUT: 2500,
   // Speaker merging settings
-  SPEAKER_MERGE_WINDOW: 2000,
+  SPEAKER_MERGE_WINDOW: 5000,
   ACTIVITY_WINDOW: 5000,
   ACTIVITY_THRESHOLD: 2,
   // Processing settings
-  MAX_CONCURRENT_PROCESSING: 2
+  MAX_CONCURRENT_PROCESSING: 4,
+  // Minimum seconds to collect before sending the very first chunk for a speaker
+  STARTUP_MIN_DURATION: 2
 };
 
 // Store audio chunks and transcriptions
@@ -32,6 +34,8 @@ let silenceTimers = new Map();
 let recentActivity = [];          
 let processingQueue = new Set();
 let lastTranscripts = new Map();  
+
+const speakerAliasMap = new Map();
 
 // Load API key on startup
 chrome.storage.local.get(['openaiApiKey'], (result) => {
@@ -63,7 +67,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           speakerBuffers.set(streamId, {
             buffer: [],
             lastActivityTime: Date.now(),
-            pendingTranscripts: []
+            pendingTranscripts: [],
+            processedOnce: false
           });
         }
         
@@ -220,6 +225,14 @@ function checkAndProcessSpeakerBuffer(streamId) {
   if (!speakerData) return;
   
   const bufferDuration = speakerData.buffer.length / CONFIG.SAMPLE_RATE;
+  
+  // For the very first chunk from this speaker, ensure we have at least STARTUP_MIN_DURATION seconds
+  if (!speakerData.processedOnce && bufferDuration < CONFIG.STARTUP_MIN_DURATION) {
+    // wait a little longer
+    setTimeout(() => checkAndProcessSpeakerBuffer(streamId), 300);
+    return;
+  }
+  
   const timeSinceLastProcess = Date.now() - lastProcessTime;
   const adaptiveChunkDuration = getAdaptiveChunkDuration();
   
@@ -242,8 +255,8 @@ function checkAndProcessSpeakerBuffer(streamId) {
   else if (bufferDuration > 0) {
     const timer = setTimeout(() => {
       const data = speakerBuffers.get(streamId);
-      if (data && data.buffer.length > CONFIG.SAMPLE_RATE * CONFIG.MIN_CHUNK_SIZE) {
-        console.log(`[VTF Background] Processing ${streamId} buffer due to silence`);
+      if (data && data.buffer.length > 0) {
+        console.log(`[VTF Background] Processing ${streamId} buffer due to silence (leftover ${(data.buffer.length / CONFIG.SAMPLE_RATE).toFixed(2)}s)`);
         processSpeakerBuffer(streamId, 'silence');
       }
     }, CONFIG.SILENCE_TIMEOUT);
@@ -274,17 +287,24 @@ async function processSpeakerBuffer(streamId, reason) {
   processingQueue.add(streamId);
   updateBufferStatus();
   
-  // Get chunk from buffer
-  const maxSamples = CONFIG.MAX_CHUNK_SIZE * CONFIG.SAMPLE_RATE;
-  const chunk = speakerData.buffer.slice(0, Math.min(speakerData.buffer.length, maxSamples));
+  // Get chunk from buffer – size adapts to current activity but obeys hard cap
+  const targetDuration = Math.min(getAdaptiveChunkDuration(), CONFIG.MAX_CHUNK_SIZE);
+  const targetSamples = targetDuration * CONFIG.SAMPLE_RATE;
+  const chunk = speakerData.buffer.slice(0, Math.min(speakerData.buffer.length, targetSamples));
   
   // Remove processed samples from buffer
   speakerData.buffer = speakerData.buffer.slice(chunk.length);
   
+  // mark that we have processed at least once
+  speakerData.processedOnce = true;
+  
   console.log(`[VTF Background] Processing ${streamId} buffer: ${chunk.length} samples (${(chunk.length / CONFIG.SAMPLE_RATE).toFixed(2)}s), reason: ${reason}`);
   
   // Check if chunk has actual audio (not just silence)
-  const maxSample = Math.max(...chunk.map(Math.abs));
+  const maxSample = chunk.reduce((max, sample) => {
+    const absVal = Math.abs(sample);
+    return absVal > max ? absVal : max;
+  }, 0);
   if (maxSample < CONFIG.SILENCE_THRESHOLD) {
     console.log(`[VTF Background] ${streamId} chunk is silent, skipping transcription`);
     processingQueue.delete(streamId);
@@ -366,21 +386,25 @@ async function processSpeakerBuffer(streamId, reason) {
 
 // Extract speaker name from streamId - UPDATED WITH ALL KNOWN SPEAKERS
 function extractSpeakerName(streamId) {
-  if (streamId.includes('msRemAudio-')) {
-    const parts = streamId.split('-');
-    if (parts.length > 1) {
-      const id = parts[1].substring(0, 6);
-      // Updated mapping with all known speakers
-      const knownSpeakers = {
-        'XRcupJ': 'DP',
-        'Ixslfo': 'Rickman',
-        'O3e0pz': 'Kira',
-        // Add more mappings as you identify them
-      };
-      return knownSpeakers[id] || `Speaker-${id}`;
-    }
+  if (!streamId || !streamId.startsWith('msRemAudio-')) return 'Unknown';
+
+  const key = streamId.split('-')[1] || streamId; // the middle segment is stable per user session
+
+  // If we have a known hard-coded mapping, use it first
+  const staticMap = {
+    XRcupJ: 'DP',
+    Ixslfo: 'Rickman',
+    O3e0pz: 'Kira'
+  };
+  const shortId = key.substring(0, 6);
+  if (staticMap[shortId]) return staticMap[shortId];
+
+  // Dynamic assignment – keep alias stable within the session
+  if (!speakerAliasMap.has(shortId)) {
+    const alias = `S${speakerAliasMap.size + 1}`; // S1, S2 …
+    speakerAliasMap.set(shortId, alias);
   }
-  return 'Unknown';
+  return speakerAliasMap.get(shortId);
 }
 
 // Check if we should merge with previous transcript
