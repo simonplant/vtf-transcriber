@@ -60,15 +60,14 @@ function fallbackCopyToClipboard(text, count) {
   try {
     const successful = document.execCommand('copy');
     if (successful) {
-      console.log('[Popup] Fallback copy successful');
-      showSuccess(`Copied ${count} transcriptions to clipboard`);
-    } else {
-      console.error('[Popup] Fallback copy failed');
+              showSuccess(`Copied ${count} transcriptions to clipboard`);
+      } else {
+        console.error('[Popup] Fallback copy failed');
+        showError('Failed to copy to clipboard');
+      }
+    } catch (err) {
+      console.error('[Popup] Fallback copy error:', err);
       showError('Failed to copy to clipboard');
-    }
-  } catch (err) {
-    console.error('[Popup] Fallback copy error:', err);
-    showError('Failed to copy to clipboard');
   } finally {
     document.body.removeChild(textArea);
   }
@@ -77,7 +76,6 @@ function fallbackCopyToClipboard(text, count) {
 // Start capture
 if (startBtn) {
   startBtn.onclick = async () => {
-    console.log('[Popup] Start button clicked');
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
     
     if (!tab.url || !tab.url.includes('vtf.t3live.com')) {
@@ -94,8 +92,6 @@ if (startBtn) {
       if (chrome.runtime.lastError) {
         console.error('Error sending to content script:', chrome.runtime.lastError);
         showError('Failed to start capture on page');
-      } else {
-        console.log('Content script response:', response);
       }
     });
     
@@ -104,7 +100,6 @@ if (startBtn) {
       if (chrome.runtime.lastError) {
         console.error('Error sending to background:', chrome.runtime.lastError);
       } else {
-        console.log('Background response:', response);
         updateStatus(true);
       }
     });
@@ -114,15 +109,12 @@ if (startBtn) {
 // Stop capture
 if (stopBtn) {
   stopBtn.onclick = async () => {
-    console.log('[Popup] Stop button clicked');
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
     
     // Send to content script
     chrome.tabs.sendMessage(tab.id, {type: 'stop_capture'}, (response) => {
       if (chrome.runtime.lastError) {
         console.error('Error sending to content script:', chrome.runtime.lastError);
-      } else {
-        console.log('Content script response:', response);
       }
     });
     
@@ -131,7 +123,6 @@ if (stopBtn) {
       if (chrome.runtime.lastError) {
         console.error('Error sending to background:', chrome.runtime.lastError);
       } else {
-        console.log('Background response:', response);
         updateStatus(false);
       }
     });
@@ -141,15 +132,11 @@ if (stopBtn) {
 // Copy all transcriptions
 if (copyBtn) {
   copyBtn.onclick = async () => {
-    console.log('[Popup] Copy all button clicked');
-    
     // Disable button during operation
     copyBtn.disabled = true;
     copyBtn.textContent = 'Copying...';
     
     chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
-      console.log('[Popup] getTranscriptions response:', response);
-      
       if (chrome.runtime.lastError || !response || !response.transcriptions) {
         console.error('[Popup] Error getting transcriptions:', chrome.runtime.lastError);
         showError('No transcriptions available to copy');
@@ -159,7 +146,6 @@ if (copyBtn) {
       }
       
       const transcriptions = response.transcriptions;
-      console.log('[Popup] Found transcriptions:', transcriptions.length);
       
       if (transcriptions.length === 0) {
         showError('No transcriptions available to copy');
@@ -175,14 +161,11 @@ if (copyBtn) {
         return `[${timestamp}] ${speaker}: ${t.text}`;
       }).join('\n');
       
-      console.log('[Popup] Formatted text content:', textContent.substring(0, 100) + '...');
-      
       // Copy to clipboard using async function
       (async () => {
         if (navigator.clipboard && navigator.clipboard.writeText) {
           try {
             await navigator.clipboard.writeText(textContent);
-            console.log('[Popup] Successfully copied to clipboard');
             showSuccess(`Copied ${transcriptions.length} transcriptions to clipboard`);
           } catch (err) {
             console.error('[Popup] Clipboard API failed:', err);
@@ -190,7 +173,6 @@ if (copyBtn) {
             fallbackCopyToClipboard(textContent, transcriptions.length);
           }
         } else {
-          console.log('[Popup] Using fallback copy method');
           fallbackCopyToClipboard(textContent, transcriptions.length);
         }
         
@@ -205,15 +187,11 @@ if (copyBtn) {
 // Export all transcriptions
 if (exportBtn) {
   exportBtn.onclick = async () => {
-    console.log('[Popup] Export all button clicked');
-    
     // Disable button during operation
     exportBtn.disabled = true;
     exportBtn.textContent = 'Exporting...';
     
     chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
-      console.log('[Popup] getTranscriptions response for export:', response);
-      
       if (chrome.runtime.lastError || !response || !response.transcriptions) {
         console.error('[Popup] Error getting transcriptions for export:', chrome.runtime.lastError);
         showError('No transcriptions available to export');
@@ -223,7 +201,6 @@ if (exportBtn) {
       }
       
       const transcriptions = response.transcriptions;
-      console.log('[Popup] Found transcriptions for export:', transcriptions.length);
       
       if (transcriptions.length === 0) {
         showError('No transcriptions available to export');
@@ -250,8 +227,6 @@ if (exportBtn) {
         markdown += `${t.text}\n\n`;
       });
       
-      console.log('[Popup] Generated markdown length:', markdown.length);
-      
       // Create and download file
       try {
         const blob = new Blob([markdown], { type: 'text/markdown' });
@@ -264,7 +239,6 @@ if (exportBtn) {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
         
-        console.log('[Popup] Export download triggered successfully');
         showSuccess(`Exported ${transcriptions.length} transcriptions as markdown`);
         exportBtn.disabled = false;
         exportBtn.textContent = 'Export All';
@@ -281,15 +255,11 @@ if (exportBtn) {
 // Daily export - comprehensive markdown for the entire day
 if (dailyExportBtn) {
   dailyExportBtn.onclick = async () => {
-    console.log('[Popup] Daily export button clicked');
-    
     // Disable button during operation
     dailyExportBtn.disabled = true;
     dailyExportBtn.textContent = 'Generating...';
     
     chrome.runtime.sendMessage({type: 'getDailyMarkdown'}, (response) => {
-      console.log('[Popup] getDailyMarkdown response:', response);
-      
       if (chrome.runtime.lastError || !response || !response.markdown) {
         console.error('[Popup] Error getting daily markdown:', chrome.runtime.lastError);
         showError('Failed to generate daily export');
@@ -300,8 +270,6 @@ if (dailyExportBtn) {
       
       const markdown = response.markdown;
       const date = response.date;
-      
-      console.log('[Popup] Generated daily markdown length:', markdown.length);
       
       // Create and download file
       try {
@@ -315,7 +283,6 @@ if (dailyExportBtn) {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
         
-        console.log('[Popup] Daily export download triggered successfully');
         showSuccess(`Daily trading room export saved for ${date}`);
         dailyExportBtn.disabled = false;
         dailyExportBtn.textContent = 'Daily Export';
@@ -481,7 +448,6 @@ function checkStatus() {
       return;
     }
     
-    console.log('[Popup] Status:', response);
     if (response) {
       updateStatus(response.isCapturing);
       
@@ -592,8 +558,6 @@ setInterval(() => {
 
 // Initialize on DOM load
 document.addEventListener('DOMContentLoaded', () => {
-  console.log('[Popup] DOM loaded, checking tab...');
-  
   // Initialize audio level visualization
   initAudioLevelVisualization();
   

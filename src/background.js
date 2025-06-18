@@ -12,10 +12,11 @@ chrome.tabs.query({}, tabs => {
   });
 });
 
+// Debug configuration - set to false to reduce logging
+const DEBUG = false;
+
 // Enhanced Configuration for VTF dynamic stream switching environment
 const CONFIG = {
-SAMPLE_RATE: 16000,
-// Enhanced Configuration for VTF
 SAMPLE_RATE: 16000,
 // Increased chunk sizes for better context
 CHUNK_DURATION_ACTIVE: 4,   // seconds - better context for Whisper
@@ -312,14 +313,14 @@ return 0;
 
 // Simple log helper – switch between 'debug', 'info', 'silent'
 const LOG = { level: 'info' };
-function dbg(...msg){ if (LOG.level==='debug') console.log(...msg); }
-function info(...msg){ if (LOG.level!=='silent') console.log(...msg); }
+function dbg(...msg){ if (DEBUG) console.log(...msg); }
+function info(...msg){ if (DEBUG) console.log(...msg); }
 
 // Load API key from local storage
 chrome.storage.local.get(['openaiApiKey'], (result) => {
 if (result.openaiApiKey) {
-apiKey = result.openaiApiKey;
-console.log('[VTF Background] API key loaded from local storage');
+    apiKey = result.openaiApiKey;
+    if (DEBUG) console.log('[VTF Background] API key loaded from local storage');
 } else {
 console.warn('[VTF Background] No API key found in storage');
 }
@@ -348,7 +349,7 @@ if (request.type === 'audioData') {
     
     // Check for duplicate chunks
     if (processedChunks.has(chunkId)) {
-      console.log(`[VTF Background] Skipping duplicate chunk: ${chunkId}`);
+      if (DEBUG) console.log(`[VTF Background] Skipping duplicate chunk: ${chunkId}`);
       sendResponse({ received: true, ignored: true, reason: 'duplicate' });
       return true;
     }
@@ -362,7 +363,7 @@ if (request.type === 'audioData') {
       oldChunks.forEach(id => processedChunks.delete(id));
     }
     
-    console.log(`[VTF Background] Processing audio chunk: ${request.audioData.length} samples from stream ${streamId} (ID: ${chunkId})`);
+    if (DEBUG) console.log(`[VTF Background] Processing audio chunk: ${request.audioData.length} samples from stream ${streamId} (ID: ${chunkId})`);
     
     // Initialize speaker buffer if needed
     if (!speakerBuffers.has(streamId)) {
@@ -412,7 +413,7 @@ if (request.type === 'startCapture') {
   transcriptions = []; 
   recentActivity = []; 
   processingQueue.clear();
-  console.log('[VTF Background] Started audio capture');
+  if (DEBUG) console.log('[VTF Background] Started audio capture');
   sendResponse({ status: 'started' });
   updateBufferStatus();
   return true;
@@ -426,7 +427,7 @@ if (request.type === 'stopCapture') {
       processSpeakerBuffer(streamId, 'final');
     }
   });
-  console.log('[VTF Background] Stopped audio capture');
+  if (DEBUG) console.log('[VTF Background] Stopped audio capture');
   sendResponse({ status: 'stopped' });
   updateBufferStatus();
   return true;
@@ -580,13 +581,13 @@ if (request.type === 'getStatus') {
       errorRate: Math.round(performanceMetrics.errorRate * 100)
     }
   };
-  console.log('[VTF Background] Status request:', status);
+  if (DEBUG) console.log('[VTF Background] Status request:', status);
   sendResponse(status);
   return true;
 }
 
 if (request.type === 'getTranscriptions') {
-  console.log('[VTF Background] Sending transcriptions:', transcriptions.length);
+  if (DEBUG) console.log('[VTF Background] Sending transcriptions:', transcriptions.length);
   sendResponse({ transcriptions });
   return true;
 }
@@ -621,7 +622,7 @@ if (request.type === 'importSessionData') {
           speakerAliasMap.set(key, value);
         });
       }
-      console.log(`[VTF Background] Imported ${transcriptions.length} transcriptions`);
+      if (DEBUG) console.log(`[VTF Background] Imported ${transcriptions.length} transcriptions`);
       sendResponse({ success: true, count: transcriptions.length });
     } else {
       sendResponse({ success: false, error: 'Invalid data format' });
@@ -638,13 +639,13 @@ if (request.type === 'setApiKey') {
   apiKey = request.apiKey;
   // Store API key in local storage
   chrome.storage.local.set({ openaiApiKey: apiKey }, () => {
-    if (chrome.runtime.lastError) {
-      console.error('[VTF Background] Error saving API key:', chrome.runtime.lastError);
-      sendResponse({ status: 'error', error: chrome.runtime.lastError.message });
-    } else {
-      console.log('[VTF Background] API key saved to local storage');
-      sendResponse({ status: 'saved' });
-    }
+      if (chrome.runtime.lastError) {
+    console.error('[VTF Background] Error saving API key:', chrome.runtime.lastError);
+    sendResponse({ status: 'error', error: chrome.runtime.lastError.message });
+  } else {
+    if (DEBUG) console.log('[VTF Background] API key saved to local storage');
+    sendResponse({ status: 'saved' });
+  }
   });
   return true;
 }
@@ -727,7 +728,7 @@ if (silenceTimers.has(streamId)) {
 clearTimeout(silenceTimers.get(streamId));
 }
 
-console.log(`[VTF Background] Speaker ${streamId}: buffer=${bufferDuration.toFixed(2)}s, chunk=${adaptiveChunkDuration}s`);
+    if (DEBUG) console.log(`[VTF Background] Speaker ${streamId}: buffer=${bufferDuration.toFixed(2)}s, chunk=${adaptiveChunkDuration}s`);
 
 // Process if we have enough audio based on adaptive duration
 if (bufferDuration >= adaptiveChunkDuration) {
@@ -742,7 +743,7 @@ else if (bufferDuration > 0) {
 const timer = setTimeout(() => {
   const data = speakerBuffers.get(streamId);
   if (data && data.buffer.length > 0) {
-    console.log(`[VTF Background] Processing ${streamId} buffer due to silence (leftover ${(data.buffer.length / CONFIG.SAMPLE_RATE).toFixed(2)}s)`);
+    if (DEBUG) console.log(`[VTF Background] Processing ${streamId} buffer due to silence (leftover ${(data.buffer.length / CONFIG.SAMPLE_RATE).toFixed(2)}s)`);
     processSpeakerBuffer(streamId, 'silence');
   }
 }, CONFIG.SILENCE_TIMEOUT);
@@ -784,7 +785,7 @@ speakerData.buffer = speakerData.buffer.slice(chunk.length);
 // mark that we have processed at least once
 speakerData.processedOnce = true;
 
-console.log(`[VTF Background] Processing ${streamId} buffer: ${chunk.length} samples (${(chunk.length / CONFIG.SAMPLE_RATE).toFixed(2)}s), reason: ${reason}`);
+  if (DEBUG) console.log(`[VTF Background] Processing ${streamId} buffer: ${chunk.length} samples (${(chunk.length / CONFIG.SAMPLE_RATE).toFixed(2)}s), reason: ${reason}`);
 
 // Analyse audio energy
 const absVals = chunk.map(Math.abs);
@@ -829,7 +830,7 @@ const preprocessed = preprocessAudioForWhisper(processed, CONFIG.SAMPLE_RATE);
 const speakerName = extractSpeakerName(streamId);
 
 // Log buffer details before sending to Whisper
-console.log(`[VTF Background] Sending to Whisper: ${(chunk.length / CONFIG.SAMPLE_RATE).toFixed(2)}s from ${speakerName} (${streamId})`);
+    if (DEBUG) console.log(`[VTF Background] Sending to Whisper: ${(chunk.length / CONFIG.SAMPLE_RATE).toFixed(2)}s from ${speakerName} (${streamId})`);
 
 lastProcessTime = Date.now();
 
@@ -919,7 +920,7 @@ if (staticMap[shortId]) return staticMap[shortId];
 if (!speakerAliasMap.has(shortId)) {
 const alias = `Speaker${speakerAliasMap.size + 1}`;
 speakerAliasMap.set(shortId, alias);
-console.log(`[VTF Background] New speaker detected: ${shortId} -> ${alias}`);
+    if (DEBUG) console.log(`[VTF Background] New speaker detected: ${shortId} -> ${alias}`);
 }
 return speakerAliasMap.get(shortId);
 }
@@ -1353,7 +1354,7 @@ formData.append('response_format', 'verbose_json');
 formData.append('prompt', 'Trading room conversation. Speakers discuss: SPY, QQQ, options, strikes, calls, puts. Common prices: 78, 87, 90, 350, 400, 450, 475, 500. Terms: support, resistance, breakout.');
 formData.append('temperature', '0'); // Consistent results
 
-console.log('[VTF Background] Sending to Whisper API...');
+if (DEBUG) console.log('[VTF Background] Sending to Whisper API...');
 
 // Send to Whisper API with retry logic
 const response = await retryWithBackoff(async () => {
@@ -1368,10 +1369,10 @@ const response = await retryWithBackoff(async () => {
   return res;
 });
 
-console.log('[VTF Background] Whisper API response status:', response.status);
+if (DEBUG) console.log('[VTF Background] Whisper API response status:', response.status);
 
 const result = await response.json();
-console.log('[VTF Background] Whisper API result:', result);
+if (DEBUG) console.log('[VTF Background] Whisper API result:', result);
 
 if (result.text && result.text.trim()) {
   // Post-process the transcription
@@ -1411,7 +1412,7 @@ if (result.text && result.text.trim()) {
   
   return transcription;
 } else {
-  console.log('[VTF Background] No text in transcription result');
+  if (DEBUG) console.log('[VTF Background] No text in transcription result');
   rateLimiter.completeRequest(); // Complete the rate limiting tracking
 }
 
@@ -1444,11 +1445,11 @@ tabs.forEach(tab => {
 });
 
 // Optional cleanup for very long sessions to prevent memory issues
-if (transcriptions.length > CONFIG.MAX_TRANSCRIPTIONS) {
-const removed = transcriptions.length - CONFIG.TRANSCRIPTION_CLEANUP_KEEP;
-transcriptions = transcriptions.slice(-CONFIG.TRANSCRIPTION_CLEANUP_KEEP);
-console.log(`[VTF Background] Memory cleanup: removed ${removed} old transcriptions, keeping ${transcriptions.length}`);
-}
+  if (transcriptions.length > CONFIG.MAX_TRANSCRIPTIONS) {
+    const removed = transcriptions.length - CONFIG.TRANSCRIPTION_CLEANUP_KEEP;
+    transcriptions = transcriptions.slice(-CONFIG.TRANSCRIPTION_CLEANUP_KEEP);
+    if (DEBUG) console.log(`[VTF Background] Memory cleanup: removed ${removed} old transcriptions, keeping ${transcriptions.length}`);
+  }
 
 return newTranscription;
 }
@@ -1567,7 +1568,7 @@ speakerBuffers.forEach((data, streamId) => {
   
   // Process if buffer has been sitting for too long
   if (bufferDuration >= CONFIG.MIN_CHUNK_SIZE && timeSinceActivity > 3000 && !processingQueue.has(streamId)) {
-    console.log(`[VTF Background] Periodic processing for ${streamId}`);
+    if (DEBUG) console.log(`[VTF Background] Periodic processing for ${streamId}`);
     processSpeakerBuffer(streamId, 'periodic');
   }
 });
@@ -1608,7 +1609,7 @@ conversationProcessor.checkForCompletedSegments();
 }, 2000);
 
 // Log when service worker starts
-console.log('[VTF Background] Service worker started at', new Date().toISOString());
+if (DEBUG) console.log('[VTF Background] Service worker started at', new Date().toISOString());
 
 
 
