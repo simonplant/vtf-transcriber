@@ -325,6 +325,34 @@ a:hover {
   color: var(--vtf-danger);
 }
 
+.vtf-metric-value.old {
+  color: var(--vtf-gray-600);
+}
+
+/* Audio Quality Indicators */
+.vtf-activity-value.good {
+  color: var(--vtf-success);
+  font-weight: 500;
+}
+
+.vtf-activity-value.fair {
+  color: var(--vtf-warning);
+  font-weight: 500;
+}
+
+.vtf-activity-value.poor {
+  color: var(--vtf-danger);
+  font-weight: 500;
+}
+
+.vtf-activity-value.none {
+  color: var(--vtf-gray-500);
+}
+
+.vtf-metric-value.recent {
+  color: var(--vtf-success);
+}
+
 .vtf-metric-label {
   font-size: var(--vtf-font-size-xs);
   color: var(--vtf-text-muted);
@@ -475,7 +503,7 @@ body.vtf-popup {
 }
 
 .vtf-activity-value.old {
-  color: var(--vtf-gray-300);
+  color: var(--vtf-gray-600);
 }
 
 /* Dashboard Grid */

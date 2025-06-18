@@ -466,6 +466,8 @@ if (request.type === 'getStatus') {
     let centroidSum = 0;
     let validVadCount = 0;
     let qualityScores = [];
+    let maxAmplitude = 0;
+    let clippingCount = 0;
     
     recentChunks.forEach(chunk => {
       if (chunk.vadResult) {
@@ -475,9 +477,18 @@ if (request.type === 'getStatus') {
         snrSum += chunk.vadResult.features.snr;
         centroidSum += chunk.vadResult.features.spectralCentroid;
         
+        // Track maximum amplitude for clipping detection
+        if (chunk.vadResult.features && chunk.vadResult.features.maxAmplitude) {
+          maxAmplitude = Math.max(maxAmplitude, chunk.vadResult.features.maxAmplitude);
+          if (chunk.vadResult.features.maxAmplitude > 0.95) {
+            clippingCount++;
+          }
+        }
+        
         // Track quality
         if (chunk.vadResult.quality) {
           switch (chunk.vadResult.quality) {
+            case 'excellent': qualityScores.push(4); break;
             case 'good': qualityScores.push(3); break;
             case 'fair': qualityScores.push(2); break;
             case 'poor': qualityScores.push(1); break;
@@ -519,19 +530,27 @@ if (request.type === 'getStatus') {
     // Calculate overall audio quality
     if (qualityScores.length > 0) {
       const avgQuality = qualityScores.reduce((a, b) => a + b, 0) / qualityScores.length;
-      if (avgQuality >= 2.7) {
+      if (avgQuality >= 3.5) {
         audioQualityStats.overall = 'excellent';
-      } else if (avgQuality >= 2.2) {
+      } else if (avgQuality >= 2.7) {
         audioQualityStats.overall = 'good';
-      } else if (avgQuality >= 1.5) {
+      } else if (avgQuality >= 1.8) {
         audioQualityStats.overall = 'fair';
       } else {
         audioQualityStats.overall = 'poor';
       }
       
       // Detailed metrics
-      audioQualityStats.metrics.clarity = (avgQuality / 3 * 100).toFixed(0) + '%';
+      audioQualityStats.metrics.clarity = (avgQuality / 4 * 100).toFixed(0) + '%';
       audioQualityStats.metrics.noise = parseFloat(vadStats.avgSNR) < 6 ? 'High' : parseFloat(vadStats.avgSNR) < 10 ? 'Medium' : 'Low';
+      
+      // Clipping detection
+      if (clippingCount > 0) {
+        const clippingPercent = ((clippingCount / validVadCount) * 100).toFixed(1);
+        audioQualityStats.metrics.clipping = `${clippingPercent}% clipped`;
+      } else {
+        audioQualityStats.metrics.clipping = 'None';
+      }
     }
   }
   

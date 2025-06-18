@@ -31,6 +31,11 @@ const activeChannels = document.getElementById('activeChannels');
 const totalTracks = document.getElementById('totalTracks');
 const channelList = document.getElementById('channelList');
 
+// Audio level visualization elements
+let audioLevelCanvas = null;
+let audioLevelCtx = null;
+let audioLevelHistory = [];
+
 // State
 let isTranscribing = false;
 let sessionStartTime = null;
@@ -363,8 +368,11 @@ function updateActivityDisplay(response) {
   processingStatus.className = isProcessing ? 'vtf-activity-value processing' : 'vtf-activity-value none';
   processingStatus.textContent = isProcessing ? 'Active' : 'Idle';
   
-  // Update audio quality
-  if (response.audioQuality) {
+  // Update audio quality using new function
+  if (response.audioQualityStats) {
+    updateAudioQualityDisplay(response.audioQualityStats);
+  } else if (response.audioQuality) {
+    // Fallback for older format
     const quality = response.audioQuality.toLowerCase();
     audioQuality.className = `vtf-activity-value ${quality}`;
     audioQuality.textContent = quality.charAt(0).toUpperCase() + quality.slice(1);
@@ -525,6 +533,13 @@ function checkStatus() {
         } else {
           signalNoise.className = 'vtf-metric-value low';
         }
+        
+        // Update audio level visualization based on voice activity and probability
+        const audioLevel = Math.max(
+          parseFloat(vad.avgProbability || 0), 
+          parseFloat(vad.voiceActivity || 0) / 100
+        );
+        updateAudioLevel(audioLevel);
       }
       
       // Update performance metrics if available
@@ -579,6 +594,9 @@ setInterval(() => {
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[Popup] DOM loaded, checking tab...');
   
+  // Initialize audio level visualization
+  initAudioLevelVisualization();
+  
   chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
     const tab = tabs[0];
     if (!tab.url || !tab.url.includes('vtf.t3live.com')) {
@@ -588,3 +606,120 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// Update audio quality display
+function updateAudioQualityDisplay(qualityStats) {
+  if (!qualityStats) return;
+  
+  const quality = qualityStats.overall || 'unknown';
+  audioQuality.textContent = quality.charAt(0).toUpperCase() + quality.slice(1);
+  
+  // Color coding
+  switch (quality) {
+    case 'excellent':
+      audioQuality.className = 'vtf-activity-value high';
+      break;
+    case 'good':
+      audioQuality.className = 'vtf-activity-value good';
+      break;
+    case 'fair':
+      audioQuality.className = 'vtf-activity-value fair';
+      break;
+    case 'poor':
+      audioQuality.className = 'vtf-activity-value poor';
+      break;
+    default:
+      audioQuality.className = 'vtf-activity-value none';
+  }
+  
+  // Update detailed quality metrics if available
+  if (qualityStats.metrics) {
+    const m = qualityStats.metrics;
+    audioQuality.title = `Clarity: ${m.clarity || 'N/A'}\nNoise: ${m.noise || 'N/A'}\nClipping: ${m.clipping || 'None'}`;
+  }
+}
+
+// Initialize audio level visualization
+function initAudioLevelVisualization() {
+  audioLevelCanvas = document.getElementById('audioLevelCanvas');
+  if (audioLevelCanvas) {
+    audioLevelCtx = audioLevelCanvas.getContext('2d');
+    audioLevelCanvas.width = 280;
+    audioLevelCanvas.height = 60;
+    
+    // Initialize history array
+    audioLevelHistory = new Array(140).fill(0);
+    
+    // Start animation
+    drawAudioLevels();
+  }
+}
+
+// Draw audio level visualization
+function drawAudioLevels() {
+  if (!audioLevelCtx) return;
+  
+  const width = audioLevelCanvas.width;
+  const height = audioLevelCanvas.height;
+  
+  // Clear canvas
+  audioLevelCtx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+  audioLevelCtx.fillRect(0, 0, width, height);
+  
+  // Draw grid lines
+  audioLevelCtx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+  audioLevelCtx.lineWidth = 1;
+  
+  // Horizontal lines at -20dB, -10dB, 0dB
+  const levels = [0.1, 0.3, 1.0];
+  levels.forEach(level => {
+    const y = height - (level * height);
+    audioLevelCtx.beginPath();
+    audioLevelCtx.moveTo(0, y);
+    audioLevelCtx.lineTo(width, y);
+    audioLevelCtx.stroke();
+  });
+  
+  // Draw audio level history
+  audioLevelCtx.strokeStyle = '#4CAF50';
+  audioLevelCtx.lineWidth = 2;
+  audioLevelCtx.beginPath();
+  
+  for (let i = 0; i < audioLevelHistory.length; i++) {
+    const x = (i / audioLevelHistory.length) * width;
+    const level = audioLevelHistory[i];
+    const y = height - (level * height * 0.8) - 5;
+    
+    if (i === 0) {
+      audioLevelCtx.moveTo(x, y);
+    } else {
+      audioLevelCtx.lineTo(x, y);
+    }
+  }
+  
+  audioLevelCtx.stroke();
+  
+  // Draw peak indicator
+  const currentLevel = audioLevelHistory[audioLevelHistory.length - 1];
+  if (currentLevel > 0.7) {
+    audioLevelCtx.fillStyle = '#FF5252';
+  } else if (currentLevel > 0.3) {
+    audioLevelCtx.fillStyle = '#4CAF50';
+  } else {
+    audioLevelCtx.fillStyle = '#666';
+  }
+  
+  const peakX = width - 10;
+  const peakY = height - (currentLevel * height * 0.8) - 5;
+  audioLevelCtx.beginPath();
+  audioLevelCtx.arc(peakX, peakY, 3, 0, Math.PI * 2);
+  audioLevelCtx.fill();
+  
+  requestAnimationFrame(drawAudioLevels);
+}
+
+// Update audio level history
+function updateAudioLevel(level) {
+  audioLevelHistory.shift();
+  audioLevelHistory.push(Math.min(1, Math.max(0, level)));
+}
