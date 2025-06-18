@@ -54,8 +54,9 @@ function validateMessage(data, expectedType) {
 
 // Listen for audio data from inject script
 function handleAudioMessage(event) {
-  // Only accept messages from the same window
+  // Only accept messages from the same window and origin
   if (event.source !== window) return;
+  if (event.origin !== window.location.origin) return;
   
   if (contextInvalidated) return;
   

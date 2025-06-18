@@ -211,7 +211,8 @@ if (exportBtn) {
       
       // Create markdown content
       const now = new Date();
-      const dateStr = now.toLocaleDateString();
+      const safeDate = now.toISOString().split('T')[0]; // YYYY-MM-DD format
+      const dateStr = now.toLocaleDateString(); // Keep for display
       const timeStr = now.toLocaleTimeString();
       
       let markdown = `# VTF Transcription Export\n\n`;
@@ -233,7 +234,7 @@ if (exportBtn) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `vtf-transcriptions-${dateStr.replace(/\//g, '-')}.md`;
+        a.download = `vtf-transcriptions-${safeDate}.md`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

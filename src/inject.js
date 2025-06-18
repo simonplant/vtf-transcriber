@@ -1,4 +1,11 @@
 // src/inject.js - Enhanced audio capture with stream switching support for VTF
+//
+// QA FIXES IMPLEMENTED:
+// ✅ Added proper AudioContext cleanup on page unload
+// ✅ Optimized array operations (removed spread operator)
+// ✅ Enhanced resource management and error handling
+// ✅ Added comprehensive cleanup function for all audio resources
+
 (function() {
   console.log('[VTF Inject] Enhanced script loaded with stream switching support');
   
@@ -8,6 +15,51 @@
   let workletLoaded = false;
   let producerChannels = new Map(); // Map producer IDs to channel info
   let cleanupTimeouts = new Map(); // Debounced cleanup for stream switches
+  
+  // Proper cleanup on page unload
+  window.addEventListener('beforeunload', () => {
+    console.log('[VTF Inject] Page unloading, cleaning up audio resources');
+    cleanupAudioResources();
+  });
+  
+  // Cleanup function for audio resources
+  function cleanupAudioResources() {
+    try {
+      // Close all active processors
+      activeProcessors.forEach((processor, elementId) => {
+        if (processor.source) {
+          processor.source.disconnect();
+        }
+        if (processor.processor) {
+          if (processor.processor.disconnect) {
+            processor.processor.disconnect();
+          }
+          if (processor.processor.port) {
+            processor.processor.port.close();
+          }
+        }
+      });
+      activeProcessors.clear();
+      
+      // Close audio context
+      if (audioContext && audioContext.state !== 'closed') {
+        console.log('[VTF Inject] Closing AudioContext');
+        audioContext.close();
+        audioContext = null;
+        workletLoaded = false;
+      }
+      
+      // Clear timeouts
+      cleanupTimeouts.forEach(timeout => clearTimeout(timeout));
+      cleanupTimeouts.clear();
+      
+      // Clear producer channels
+      producerChannels.clear();
+      
+    } catch (error) {
+      console.error('[VTF Inject] Error during cleanup:', error);
+    }
+  }
   
   // Error handling wrapper
   function withErrorBoundary(fn, context = '') {
@@ -213,7 +265,12 @@
             const input = inputs[0];
             if (input.length > 0) {
               const audioData = input[0];
-              this.audioBuffer.push(...audioData);
+              // Efficient array concatenation instead of spread operator
+              const oldLength = this.audioBuffer.length;
+              this.audioBuffer.length = oldLength + audioData.length;
+              for (let i = 0; i < audioData.length; i++) {
+                this.audioBuffer[oldLength + i] = audioData[i];
+              }
               
               while (this.audioBuffer.length >= this.chunkSize) {
                 const chunk = this.audioBuffer.slice(0, this.chunkSize);
@@ -361,7 +418,12 @@
         
         processor.onaudioprocess = withErrorBoundary((e) => {
           const inputData = e.inputBuffer.getChannelData(0);
-          audioBuffer.push(...inputData);
+          // Efficient array concatenation for ScriptProcessor fallback
+          const oldLength = audioBuffer.length;
+          audioBuffer.length = oldLength + inputData.length;
+          for (let i = 0; i < inputData.length; i++) {
+            audioBuffer[oldLength + i] = inputData[i];
+          }
           
           if (audioBuffer.length >= CHUNK_SIZE) {
             const chunk = audioBuffer.slice(0, CHUNK_SIZE);

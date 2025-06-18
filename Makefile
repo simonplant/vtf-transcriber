@@ -57,6 +57,7 @@ dist: clean ## 📦 Build the extension for distribution into the 'dist/' folder
 	@cp -r icons dist/
 	@# Remove unwanted development files from the final build
 	@find dist -name ".DS_Store" -delete
+	@find dist -name "QA_TESTING_CHECKLIST.md" -delete
 	@echo "$(GREEN)✓ Extension built successfully in 'dist/' directory!$(NC)"
 
 # Removes the generated 'dist/' directory.
