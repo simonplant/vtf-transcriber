@@ -467,34 +467,65 @@ function createTranscriptionDisplay() {
   `;
   document.head.appendChild(style);
   
-  // Add export functionality
+  // Add the display to the DOM FIRST
+  document.body.appendChild(display);
+  
+  // Now add export functionality after elements are in the DOM
   const exportBtn = document.getElementById('vtf-export-btn');
   if (exportBtn) {
-    exportBtn.onclick = exportTranscripts;
+    exportBtn.onclick = (e) => {
+      console.log('[Content] Export button clicked');
+      e.preventDefault();
+      e.stopPropagation();
+      exportTranscripts();
+    };
+    console.log('[Content] Export button handler attached');
+  } else {
+    console.error('[Content] Export button not found');
   }
   
   const dailyExportBtn = document.getElementById('vtf-daily-export-btn');
   if (dailyExportBtn) {
-    dailyExportBtn.onclick = exportDailyMarkdown;
+    dailyExportBtn.onclick = (e) => {
+      console.log('[Content] Daily export button clicked');
+      e.preventDefault();
+      e.stopPropagation();
+      exportDailyMarkdown();
+    };
+    console.log('[Content] Daily export button handler attached');
+  } else {
+    console.error('[Content] Daily export button not found');
   }
   
   const backupBtn = document.getElementById('vtf-backup-btn');
   if (backupBtn) {
-    backupBtn.onclick = exportSessionBackup;
+    backupBtn.onclick = (e) => {
+      console.log('[Content] Backup button clicked');
+      e.preventDefault();
+      e.stopPropagation();
+      exportSessionBackup();
+    };
+    console.log('[Content] Backup button handler attached');
+  } else {
+    console.error('[Content] Backup button not found');
   }
   
   const restoreBtn = document.getElementById('vtf-restore-btn');
   if (restoreBtn) {
-    restoreBtn.onclick = () => {
+    restoreBtn.onclick = (e) => {
+      console.log('[Content] Restore button clicked');
+      e.preventDefault();
+      e.stopPropagation();
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = '.json';
       input.onchange = importSessionBackup;
       input.click();
     };
+    console.log('[Content] Restore button handler attached');
+  } else {
+    console.error('[Content] Restore button not found');
   }
-  
-  document.body.appendChild(display);
 }
 
 // Display transcription with merge handling
@@ -839,38 +870,86 @@ function makeDraggable(element) {
 
 // Export transcripts to text file
 function exportTranscripts() {
+  console.log('[Content] Export transcripts function called');
+  
   chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
-    if (chrome.runtime.lastError || !response || !response.transcriptions) {
-      console.error('[Content] Failed to get transcriptions for export');
+    if (chrome.runtime.lastError) {
+      console.error('[Content] Chrome runtime error:', chrome.runtime.lastError);
+      alert('Failed to get transcriptions: ' + chrome.runtime.lastError.message);
+      return;
+    }
+    
+    if (!response) {
+      console.error('[Content] No response from background script');
+      alert('No response from background script');
+      return;
+    }
+    
+    if (!response.transcriptions) {
+      console.error('[Content] No transcriptions in response:', response);
+      alert('No transcriptions found in response');
       return;
     }
     
     const transcripts = response.transcriptions;
+    console.log(`[Content] Found ${transcripts.length} transcriptions to export`);
+    
     if (transcripts.length === 0) {
       alert('No transcriptions to export');
       return;
     }
     
-    // Format transcripts
-    const formatted = transcripts.map(t => {
-      const time = new Date(t.timestamp).toLocaleString();
-      const speaker = t.speaker || 'Unknown';
-      const duration = t.duration ? ` (${t.duration.toFixed(1)}s)` : '';
-      return `[${time}] ${speaker}${duration}: ${t.text}`;
-    }).join('\n\n');
-    
-    // Create and download file
-    const blob = new Blob([formatted], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `vtf-transcripts-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    
-    console.log(`[Content] Exported ${transcripts.length} transcriptions`);
+    try {
+      // Format transcripts
+      const formatted = transcripts.map(t => {
+        const time = new Date(t.timestamp).toLocaleString();
+        const speaker = t.speaker || 'Unknown';
+        const duration = t.duration ? ` (${t.duration.toFixed(1)}s)` : '';
+        const confidence = t.confidence ? ` [${Math.round(t.confidence * 100)}%]` : '';
+        return `[${time}] ${speaker}${duration}${confidence}: ${t.text}`;
+      }).join('\n\n');
+      
+      // Create and download file
+      const blob = new Blob([formatted], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `vtf-transcripts-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      console.log(`[Content] Exported ${transcripts.length} transcriptions`);
+      
+      // Show success notification
+      const notification = document.createElement('div');
+      notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: rgba(76, 175, 80, 0.9);
+        color: white;
+        padding: 12px 20px;
+        border-radius: 6px;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 14px;
+        z-index: 10001;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      `;
+      notification.textContent = `Exported ${transcripts.length} transcriptions`;
+      document.body.appendChild(notification);
+      
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.parentNode.removeChild(notification);
+        }
+      }, 3000);
+      
+    } catch (error) {
+      console.error('[Content] Error during export:', error);
+      alert('Error creating export file: ' + error.message);
+    }
   });
 }
 
@@ -878,10 +957,24 @@ function exportTranscripts() {
 
 // Export session backup
 function exportSessionBackup() {
+  console.log('[Content] Export session backup function called');
+  
   chrome.runtime.sendMessage({type: 'exportSessionData'}, (response) => {
-    if (chrome.runtime.lastError || !response || !response.sessionData) {
-      console.error('[Content] Failed to get session data for backup');
-      alert('Failed to create backup');
+    if (chrome.runtime.lastError) {
+      console.error('[Content] Chrome runtime error:', chrome.runtime.lastError);
+      alert('Failed to create backup: ' + chrome.runtime.lastError.message);
+      return;
+    }
+    
+    if (!response) {
+      console.error('[Content] No response from background script');
+      alert('No response from background script');
+      return;
+    }
+    
+    if (!response.sessionData) {
+      console.error('[Content] No session data in response:', response);
+      alert('Failed to get session data for backup');
       return;
     }
     
@@ -990,9 +1083,23 @@ function importSessionBackup(event) {
 
 // Export daily markdown
 function exportDailyMarkdown() {
+  console.log('[Content] Export daily markdown function called');
+  
   chrome.runtime.sendMessage({type: 'getDailyMarkdown'}, (response) => {
-    if (chrome.runtime.lastError || !response || !response.markdown) {
-      console.error('[Content] Failed to get daily markdown');
+    if (chrome.runtime.lastError) {
+      console.error('[Content] Chrome runtime error:', chrome.runtime.lastError);
+      alert('Failed to get daily markdown: ' + chrome.runtime.lastError.message);
+      return;
+    }
+    
+    if (!response) {
+      console.error('[Content] No response from background script');
+      alert('No response from background script');
+      return;
+    }
+    
+    if (!response.markdown) {
+      console.error('[Content] No markdown in response:', response);
       alert('Failed to generate daily markdown export');
       return;
     }
