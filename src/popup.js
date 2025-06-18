@@ -360,12 +360,12 @@ function calculateSessionCost(chunks, transcriptions) {
 function updateActivityDisplay(response) {
   // Update speech activity
   const activity = response.speechActivity || 'none';
-  speechActivity.className = `vtf-activity-value ${activity}`;
+  speechActivity.className = `vtf-metric-value ${activity}`;
   speechActivity.textContent = activity.charAt(0).toUpperCase() + activity.slice(1);
   
   // Update processing status
   const isProcessing = response.isProcessing || false;
-  processingStatus.className = isProcessing ? 'vtf-activity-value processing' : 'vtf-activity-value none';
+  processingStatus.className = isProcessing ? 'vtf-metric-value processing' : 'vtf-metric-value none';
   processingStatus.textContent = isProcessing ? 'Active' : 'Idle';
   
   // Update audio quality using new function
@@ -374,10 +374,10 @@ function updateActivityDisplay(response) {
   } else if (response.audioQuality) {
     // Fallback for older format
     const quality = response.audioQuality.toLowerCase();
-    audioQuality.className = `vtf-activity-value ${quality}`;
+    audioQuality.className = `vtf-metric-value ${quality}`;
     audioQuality.textContent = quality.charAt(0).toUpperCase() + quality.slice(1);
   } else {
-    audioQuality.className = 'vtf-activity-value none';
+    audioQuality.className = 'vtf-metric-value none';
     audioQuality.textContent = 'Unknown';
   }
   
@@ -391,10 +391,10 @@ function updateActivityDisplay(response) {
     const timeSinceLastTranscript = now - lastTranscriptTime.time;
     const timeText = formatTimeSince(timeSinceLastTranscript);
     lastTranscription.textContent = timeText;
-    lastTranscription.className = timeSinceLastTranscript < 30000 ? 'vtf-activity-value recent' : 'vtf-activity-value old';
+    lastTranscription.className = timeSinceLastTranscript < 30000 ? 'vtf-metric-value recent' : 'vtf-metric-value old';
   } else {
     lastTranscription.textContent = 'Never';
-    lastTranscription.className = 'vtf-activity-value old';
+    lastTranscription.className = 'vtf-metric-value old';
   }
 }
 
@@ -617,19 +617,19 @@ function updateAudioQualityDisplay(qualityStats) {
   // Color coding
   switch (quality) {
     case 'excellent':
-      audioQuality.className = 'vtf-activity-value high';
+      audioQuality.className = 'vtf-metric-value high';
       break;
     case 'good':
-      audioQuality.className = 'vtf-activity-value good';
+      audioQuality.className = 'vtf-metric-value good';
       break;
     case 'fair':
-      audioQuality.className = 'vtf-activity-value fair';
+      audioQuality.className = 'vtf-metric-value fair';
       break;
     case 'poor':
-      audioQuality.className = 'vtf-activity-value poor';
+      audioQuality.className = 'vtf-metric-value poor';
       break;
     default:
-      audioQuality.className = 'vtf-activity-value none';
+      audioQuality.className = 'vtf-metric-value none';
   }
   
   // Update detailed quality metrics if available

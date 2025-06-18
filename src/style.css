@@ -291,6 +291,13 @@ a:hover {
 
 .vtf-grid-4 {
   grid-template-columns: repeat(4, 1fr);
+  gap: var(--vtf-space-3);
+}
+
+@media (max-width: 440px) {
+  .vtf-grid-4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 /* Metrics */
@@ -413,32 +420,57 @@ a:hover {
 
 /* Popup Specific Styles */
 body.vtf-popup {
-  width: 320px;
-  min-height: 350px;
-  max-height: 500px;
-  background: var(--vtf-bg-dark);
-  color: var(--vtf-background-white);
+  width: 400px;
+  min-height: 650px;
+  margin: 0;
   padding: 0;
-  overflow-y: auto;
+  background: var(--vtf-gray-100);
 }
 
 .vtf-popup .vtf-header {
-  margin: 0;
+  margin-bottom: 0;
   border-radius: 0;
-  padding: var(--vtf-space-2);
 }
 
 .vtf-popup .vtf-section {
-  margin: 0;
-  border: none;
-  border-radius: 0;
-  border-bottom: 1px solid var(--vtf-gray-700);
-  padding: var(--vtf-space-2);
+  margin: var(--vtf-space-3);
+  padding: var(--vtf-space-4);
 }
 
 .vtf-popup .vtf-card-dark {
-  background: var(--vtf-gray-800);
-  border-color: var(--vtf-gray-600);
+  background: var(--vtf-bg-dark);
+  color: var(--vtf-background-white);
+}
+
+/* Controls Section - New Layout */
+.vtf-controls-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vtf-space-3);
+  padding: var(--vtf-space-4);
+  background: var(--vtf-background-white);
+  border: 1px solid var(--vtf-border);
+  border-radius: var(--vtf-radius-lg);
+  margin: var(--vtf-space-3);
+}
+
+.vtf-status-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--vtf-space-2);
+  flex: 1;
+  justify-content: center;
+}
+
+.vtf-status-inline span {
+  font-size: var(--vtf-font-size-sm);
+  font-weight: 500;
+  color: var(--vtf-text-muted);
+}
+
+.vtf-status-inline.active span {
+  color: var(--vtf-success);
 }
 
 /* Status Section for Popup */
@@ -459,43 +491,21 @@ body.vtf-popup {
   color: var(--vtf-danger);
 }
 
-/* Activity Monitor */
-.vtf-activity-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--vtf-space-1);
-  margin-bottom: var(--vtf-space-2);
-}
-
-.vtf-activity-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--vtf-space-1);
-}
-
-.vtf-activity-label {
-  font-size: 0.75rem;
-  color: var(--vtf-gray-300);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.vtf-activity-value {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--vtf-background-white);
-}
+/* Activity items now integrated into metrics grid */
 
 .vtf-activity-value.good {
   color: var(--vtf-success);
+  font-weight: 500;
 }
 
 .vtf-activity-value.fair {
   color: var(--vtf-warning);
+  font-weight: 500;
 }
 
 .vtf-activity-value.poor {
   color: var(--vtf-danger);
+  font-weight: 500;
 }
 
 .vtf-activity-value.recent {
@@ -504,6 +514,31 @@ body.vtf-popup {
 
 .vtf-activity-value.old {
   color: var(--vtf-gray-600);
+}
+
+/* Ensure metric values also support activity states */
+.vtf-metric-value.good {
+  color: var(--vtf-success);
+  font-weight: 500;
+}
+
+.vtf-metric-value.fair {
+  color: var(--vtf-warning);
+  font-weight: 500;
+}
+
+.vtf-metric-value.poor {
+  color: var(--vtf-danger);
+  font-weight: 500;
+}
+
+.vtf-metric-value.none {
+  color: var(--vtf-gray-500);
+}
+
+.vtf-metric-value.processing {
+  color: var(--vtf-info);
+  animation: vtf-pulse 2s infinite;
 }
 
 /* Dashboard Grid */

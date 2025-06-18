@@ -11,21 +11,19 @@
     <h1>VTF Audio Transcriber</h1>
   </div>
 
-  <!-- Status & Controls -->
-  <div class="vtf-status-section">
-    <div class="vtf-status" id="captureStatus">
+  <!-- Controls with Status -->
+  <div class="vtf-controls-section">
+    <button class="vtf-btn vtf-btn-success vtf-btn-sm" id="startBtn">Start</button>
+    <div class="vtf-status-inline" id="captureStatus">
       <div class="vtf-status-indicator" id="statusIndicator"></div>
       <span>Not Capturing</span>
     </div>
-    <div class="vtf-controls-grid">
-      <button class="vtf-btn vtf-btn-success vtf-btn-sm" id="startBtn">Start</button>
-      <button class="vtf-btn vtf-btn-danger vtf-btn-sm" id="stopBtn">Stop</button>
-    </div>
+    <button class="vtf-btn vtf-btn-danger vtf-btn-sm" id="stopBtn">Stop</button>
   </div>
 
-  <!-- Dashboard -->
+  <!-- Main Metrics Dashboard -->
   <div class="vtf-section">
-    <div class="vtf-grid vtf-grid-2">
+    <div class="vtf-grid vtf-grid-4">
       <div class="vtf-metric">
         <div class="vtf-metric-value" id="chunksCount">0</div>
         <div class="vtf-metric-label">Audio Chunks</div>
@@ -42,7 +40,29 @@
         <div class="vtf-metric-value" id="sessionCost">$0.00</div>
         <div class="vtf-metric-label">Session Cost</div>
       </div>
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="speechActivity">None</div>
+        <div class="vtf-metric-label">Speech Activity</div>
+      </div>
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="processingStatus">Idle</div>
+        <div class="vtf-metric-label">Processing</div>
+      </div>
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="lastTranscription">Never</div>
+        <div class="vtf-metric-label">Last Transcription</div>
+      </div>
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="audioQuality">Unknown</div>
+        <div class="vtf-metric-label">Audio Quality</div>
+      </div>
     </div>
+  </div>
+
+  <!-- Current Transcript Preview -->
+  <div class="vtf-section">
+    <h6 class="vtf-section-title">Current Transcript</h6>
+    <div class="vtf-transcript-preview" id="currentTranscript">Waiting for audio...</div>
   </div>
 
   <!-- Performance -->
@@ -58,7 +78,7 @@
   <!-- Voice Activity Detection -->
   <div class="vtf-section">
     <h6 class="vtf-section-title">Voice Activity Detection</h6>
-    <div class="vtf-grid vtf-grid-2">
+    <div class="vtf-grid vtf-grid-4">
       <div class="vtf-metric">
         <div class="vtf-metric-value" id="voiceActivity">0%</div>
         <div class="vtf-metric-label">Voice Activity</div>
@@ -103,30 +123,6 @@
     </div>
     <div class="vtf-channel-list" id="channelList">
       <div class="vtf-channel-empty">No active channels</div>
-    </div>
-  </div>
-
-  <!-- Current Activity -->
-  <div class="vtf-section">
-    <h6 class="vtf-section-title">Current Activity</h6>
-    <div class="vtf-activity-grid">
-      <div class="vtf-activity-item">
-        <span class="vtf-activity-label">Speech Activity</span>
-        <span class="vtf-activity-value" id="speechActivity">None</span>
-      </div>
-      <div class="vtf-activity-item">
-        <span class="vtf-activity-label">Processing</span>
-        <span class="vtf-activity-value" id="processingStatus">Idle</span>
-      </div>
-      <div class="vtf-activity-item">
-        <span class="vtf-activity-label">Last Transcription</span>
-        <span class="vtf-activity-value" id="lastTranscription">Never</span>
-      </div>
-      <div class="vtf-activity-item">
-        <span class="vtf-activity-label">Audio Quality</span>
-        <span class="vtf-activity-value" id="audioQuality">Unknown</span>
-      </div>
-      <div class="vtf-transcript-preview" id="currentTranscript">Waiting for audio...</div>
     </div>
   </div>
 
