@@ -22,7 +22,7 @@ const DEBUG_CAPTURE = false;
 // Flag to stop traffic after extension reload is detected
 let contextInvalidated = false;
 
-// Message validation function
+// Enhanced message validation with elementId support
 function validateMessage(data, expectedType) {
   if (!data || typeof data !== 'object') {
     throw new Error('Invalid message format');
@@ -35,11 +35,20 @@ function validateMessage(data, expectedType) {
   // Type-specific validation
   switch (expectedType) {
     case 'VTF_AUDIO_DATA':
-      if (!Array.isArray(data.audioData) || !data.streamId || !data.timestamp) {
+      if (!Array.isArray(data.audioData) || !data.timestamp) {
         throw new Error('Invalid audio data format');
       }
       if (data.audioData.length === 0) {
         throw new Error('Empty audio data');
+      }
+      // Support both streamId (legacy) and elementId (new)
+      if (!data.streamId && !data.elementId) {
+        throw new Error('Missing stream/element identifier');
+      }
+      break;
+    case 'VTF_FLUSH_BUFFER':
+      if (!data.elementId) {
+        throw new Error('Missing element ID for buffer flush');
       }
       break;
     case 'newTranscription':
@@ -52,13 +61,38 @@ function validateMessage(data, expectedType) {
   return true;
 }
 
-// Listen for audio data from inject script
+// Enhanced audio message handler with buffer flushing
 function handleAudioMessage(event) {
   // Only accept messages from the same window
   if (event.source !== window) return;
   
   if (contextInvalidated) return;
   
+  // Handle buffer flush messages
+  if (event.data && event.data.type === 'VTF_FLUSH_BUFFER') {
+    try {
+      validateMessage(event.data, 'VTF_FLUSH_BUFFER');
+      
+      console.log(`[Content] Buffer flush requested for ${event.data.elementId}, reason: ${event.data.reason}`);
+      
+      // Send flush request to background
+      chrome.runtime.sendMessage({
+        type: 'flushBuffer',
+        elementId: event.data.elementId,
+        reason: event.data.reason
+      }, response => {
+        if (chrome.runtime.lastError) {
+          console.warn('[Content] Error sending flush request:', chrome.runtime.lastError);
+        }
+      });
+      
+    } catch (error) {
+      console.warn('[Content] Invalid flush message:', error.message);
+    }
+    return;
+  }
+  
+  // Handle audio data messages
   if (event.data && event.data.type === 'VTF_AUDIO_DATA') {
     try {
       validateMessage(event.data, 'VTF_AUDIO_DATA');
@@ -82,40 +116,44 @@ function handleAudioMessage(event) {
       console.debug(`[Content] Sending chunk #${chunksSent} to background...`);
     }
     
-    // Check if extension context is still valid
-    // Advanced VAD filtering - skip non-voice chunks with low confidence
+    // Enhanced VAD filtering with improved thresholds
     if (event.data.vadResult) {
       const vad = event.data.vadResult;
-      if (!vad.isVoice && vad.probability < 0.3 && vad.quality === 'poor') {
+      // More selective filtering - only process chunks with good voice confidence
+      if (!vad.isVoice && vad.probability < 0.5 && vad.quality === 'poor') {
         if (DEBUG_CAPTURE) {
-          console.debug(`[Content] Skipping non-voice chunk from ${event.data.streamId} (prob=${vad.probability.toFixed(3)})`);
+          console.debug(`[Content] Skipping low-confidence chunk from ${event.data.elementId || event.data.streamId} (prob=${vad.probability.toFixed(3)})`);
         }
         return;
       }
     } else {
-      // Legacy fallback for silent chunks
-      if (event.data.isSilent && event.data.audioQuality === 'poor') {
+      // Legacy fallback - more conservative filtering
+      if (event.data.isSilent && event.data.audioQuality === 'poor' && event.data.rms < 0.005) {
         if (DEBUG_CAPTURE) {
-          console.debug(`[Content] Skipping silent chunk from ${event.data.streamId}`);
+          console.debug(`[Content] Skipping silent chunk from ${event.data.elementId || event.data.streamId}`);
         }
         return;
       }
     }
     
     try {
-      // Send to background script with VAD data
-      chrome.runtime.sendMessage({
+      // Enhanced message to background with elementId support
+      const messageData = {
         type: 'audioData',
         audioData: event.data.audioData,
         timestamp: event.data.timestamp,
-        streamId: event.data.streamId,
         chunkNumber: chunksSent,
         vadResult: event.data.vadResult,
         channelInfo: event.data.channelInfo,
+        // Support both old and new field names
+        streamId: event.data.streamId || event.data.elementId,
+        elementId: event.data.elementId || event.data.streamId,
         // Legacy compatibility
         isSilent: event.data.isSilent,
         audioQuality: event.data.audioQuality
-      }, response => {
+      };
+      
+      chrome.runtime.sendMessage(messageData, response => {
         if (chrome.runtime.lastError) {
           const msg = chrome.runtime.lastError.message || '';
           if (msg.includes('context invalidated')) {
@@ -557,40 +595,74 @@ function displayProcessedSegment(segment) {
       font-weight: 500;
     " title="Track: ${channelInfo.trackId}&#10;Label: ${channelInfo.trackLabel || 'N/A'}&#10;Stream: ${channelInfo.streamId || 'N/A'}">[CH:${channelInfo.trackId.substring(0, 6)}...]</span>` : '';
   
-  segmentElement.innerHTML = `
-    <div style="
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-      font-size: 11px;
-      color: #888;
-    ">
-      <div style="display: flex; gap: 8px; align-items: center;">
-        <span style="font-weight: 600; color: #4CAF50;">${segment.speaker}</span>
-        <span style="
-          background: rgba(33, 150, 243, 0.2);
-          color: #2196F3;
-          padding: 2px 6px;
-          border-radius: 3px;
-          font-size: 10px;
-          font-weight: 500;
-        ">${segment.topic}</span>
-        ${channelDisplay}
-      </div>
-      <div style="display: flex; gap: 8px; color: #666;">
-        <span>${startTime.toLocaleTimeString()}</span>
-        ${duration ? `<span>${duration}</span>` : ''}
-        ${confidence ? `<span>${confidence}</span>` : ''}
-      </div>
-    </div>
-    <div style="
-      color: #fff;
-      line-height: 1.5;
-      font-size: 14px;
-      text-align: left;
-    ">${segment.text}</div>
+  // Safe DOM construction to prevent XSS
+  const headerDiv = document.createElement('div');
+  headerDiv.style.cssText = `
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 11px;
+    color: #888;
   `;
+  
+  const leftDiv = document.createElement('div');
+  leftDiv.style.cssText = 'display: flex; gap: 8px; align-items: center;';
+  
+  const speakerSpan = document.createElement('span');
+  speakerSpan.style.cssText = 'font-weight: 600; color: #4CAF50;';
+  speakerSpan.textContent = segment.speaker;
+  leftDiv.appendChild(speakerSpan);
+  
+  const topicSpan = document.createElement('span');
+  topicSpan.style.cssText = `
+    background: rgba(33, 150, 243, 0.2);
+    color: #2196F3;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 500;
+  `;
+  topicSpan.textContent = segment.topic;
+  leftDiv.appendChild(topicSpan);
+  
+  if (channelDisplay) {
+    leftDiv.appendChild(document.createRange().createContextualFragment(channelDisplay));
+  }
+  
+  headerDiv.appendChild(leftDiv);
+  
+  const rightDiv = document.createElement('div');
+  rightDiv.style.cssText = 'display: flex; gap: 8px; color: #666;';
+  
+  const timeSpan = document.createElement('span');
+  timeSpan.textContent = startTime.toLocaleTimeString();
+  rightDiv.appendChild(timeSpan);
+  
+  if (duration) {
+    const durationSpan = document.createElement('span');
+    durationSpan.textContent = duration;
+    rightDiv.appendChild(durationSpan);
+  }
+  
+  if (confidence) {
+    const confSpan = document.createElement('span');
+    confSpan.textContent = confidence;
+    rightDiv.appendChild(confSpan);
+  }
+  
+  headerDiv.appendChild(rightDiv);
+  segmentElement.appendChild(headerDiv);
+  
+  const textDiv = document.createElement('div');
+  textDiv.style.cssText = `
+    color: #fff;
+    line-height: 1.5;
+    font-size: 14px;
+    text-align: left;
+  `;
+  textDiv.textContent = segment.text; // Safe text content
+  segmentElement.appendChild(textDiv);
   
   content.insertBefore(segmentElement, content.firstChild);
   
@@ -614,7 +686,7 @@ function updateDisplayStats() {
   }
 }
 
-// Legacy display function (kept for compatibility)
+// Enhanced transcription display with better segment handling
 function displayTranscription(transcription, merged = false) {
   createTranscriptionDisplay();
   
@@ -630,12 +702,19 @@ function displayTranscription(transcription, merged = false) {
       chunksElement.textContent = chunksSent;
     }
     
-    const streamId = transcription.streamId || 'unknown';
-    const speakerName = transcription.speaker || (streamId.split('-')[1] || 'Unknown');
+    // Support both old streamId and new elementId
+    const elementId = transcription.elementId || transcription.streamId || 'unknown';
+    const speakerName = transcription.speaker || (elementId.split('-')[1] || 'Unknown');
     
-    if (merged && lastTranscripts.has(streamId)) {
+    // Enhanced handling for conversation segments
+    if (transcription.isSegment) {
+      displayConversationSegment(transcription);
+      return;
+    }
+    
+    if (merged && lastTranscripts.has(elementId)) {
       // Update existing transcript
-      const lastEntry = lastTranscripts.get(streamId);
+      const lastEntry = lastTranscripts.get(elementId);
       if (lastEntry && lastEntry.element && lastEntry.element.parentNode) {
         const textElement = lastEntry.element.querySelector('.vtf-transcript-text');
         if (textElement) {
@@ -659,50 +738,95 @@ function displayTranscription(transcription, merged = false) {
     }
     
     if (!merged) {
-      // Create new entry
-      const entry = document.createElement('div');
-      entry.className = 'vtf-transcript-entry new';
+      // Create new transcript entry with enhanced metadata
+      const transcriptEntry = document.createElement('div');
+      transcriptEntry.className = 'vtf-transcript-entry';
       
-      const time = new Date(transcription.timestamp).toLocaleTimeString();
-      const duration = transcription.duration ? `(${transcription.duration.toFixed(1)}s)` : '';
+      // Enhanced confidence indicator
+      const confidenceClass = transcription.confidence > 0.8 ? 'high' : 
+                             transcription.confidence > 0.5 ? 'medium' : 'low';
       
-      // Format confidence score
-      const confidenceDisplay = transcription.confidence ? 
-        `<span style="color: ${transcription.confidence > 0.8 ? '#4CAF50' : transcription.confidence > 0.6 ? '#FF9800' : '#F44336'}; font-size: 10px; margin-left: 4px;">${Math.round(transcription.confidence * 100)}%</span>` : '';
-      
-      entry.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-          <span style="color: #888; font-size: 11px;">${time}</span>
-          <div style="display: flex; align-items: center;">
-            <span style="color: #4CAF50; font-size: 11px; font-weight: 500;">${speakerName} ${duration}${confidenceDisplay}</span>
-          </div>
+      transcriptEntry.innerHTML = `
+        <div class="vtf-transcript-header">
+          <span class="vtf-speaker-name">${speakerName}</span>
+          <span class="vtf-transcript-time">${new Date(transcription.timestamp).toLocaleTimeString()}</span>
+          <span class="vtf-confidence-indicator confidence-${confidenceClass}" title="Confidence: ${(transcription.confidence * 100).toFixed(1)}%">
+            ${transcription.confidence ? (transcription.confidence * 100).toFixed(0) + '%' : 'N/A'}
+          </span>
+          ${transcription.audioQuality ? `<span class="vtf-quality-indicator quality-${transcription.audioQuality}">${transcription.audioQuality}</span>` : ''}
         </div>
-        <div class="vtf-transcript-text" style="color: #fff; line-height: 1.4;">${transcription.text}</div>
+        <div class="vtf-transcript-text">${transcription.text}</div>
+        ${transcription.duration ? `<div class="vtf-transcript-duration">${transcription.duration.toFixed(1)}s</div>` : ''}
       `;
       
-      content.insertBefore(entry, content.firstChild);
+      // Add to content (newer entries at top)
+      content.insertBefore(transcriptEntry, content.firstChild);
       
       // Store reference for potential merging
-      lastTranscripts.set(streamId, {
-        element: entry,
-        timestamp: transcription.timestamp
+      lastTranscripts.set(elementId, {
+        element: transcriptEntry,
+        text: transcription.text,
+        timestamp: transcription.timestamp,
+        speaker: speakerName
       });
       
-      // Keep only last 100 transcriptions in display (increased for full day capture)
-      while (content.children.length > 100) {
-        const removed = content.removeChild(content.lastChild);
-        // Clean up stored references
-        lastTranscripts.forEach((value, key) => {
-          if (value.element === removed) {
-            lastTranscripts.delete(key);
-          }
-        });
+      // Enhanced cleanup - keep only recent transcripts
+      const entries = content.querySelectorAll('.vtf-transcript-entry');
+      if (entries.length > 100) {
+        // Remove oldest entries beyond limit
+        for (let i = 100; i < entries.length; i++) {
+          entries[i].remove();
+        }
       }
+      
+      // Scroll to show new content
+      content.scrollTop = 0;
     }
-    
-    // Scroll to top (newest content)
-    content.parentElement.scrollTop = 0;
   }
+}
+
+// New function to display conversation segments
+function displayConversationSegment(segment) {
+  const content = document.getElementById('vtf-transcription-content');
+  if (!content) return;
+  
+  const segmentEntry = document.createElement('div');
+  segmentEntry.className = 'vtf-segment vtf-conversation-segment';
+  
+  const confidenceClass = segment.confidence > 0.8 ? 'high' : 
+                         segment.confidence > 0.5 ? 'medium' : 'low';
+  
+  segmentEntry.innerHTML = `
+    <div class="vtf-segment-header">
+      <span class="vtf-speaker-name">${segment.speaker}</span>
+      <span class="vtf-segment-time">${new Date(segment.timestamp).toLocaleTimeString()}</span>
+      <span class="vtf-segment-duration">${segment.duration.toFixed(1)}s</span>
+      <span class="vtf-confidence-indicator confidence-${confidenceClass}" title="Confidence: ${(segment.confidence * 100).toFixed(1)}%">
+        ${(segment.confidence * 100).toFixed(0)}%
+      </span>
+    </div>
+    <div class="vtf-segment-text">${segment.text}</div>
+  `;
+  
+  // Add segment indicator
+  segmentEntry.classList.add('vtf-enhanced-segment');
+  
+  // Add to content (newer segments at top)
+  content.insertBefore(segmentEntry, content.firstChild);
+  
+  // Enhanced cleanup for segments
+  const segments = content.querySelectorAll('.vtf-conversation-segment');
+  if (segments.length > 50) {
+    // Remove oldest segments beyond limit
+    for (let i = 50; i < segments.length; i++) {
+      segments[i].remove();
+    }
+  }
+  
+  // Scroll to show new content
+  content.scrollTop = 0;
+  
+  console.log(`[Content] Displayed conversation segment: [${segment.speaker}] ${segment.text.substring(0, 50)}...`);
 }
 
 // Update buffer status visualization
@@ -1038,8 +1162,6 @@ function exportTranscripts() {
     }
   });
 }
-
-
 
 // Export session backup
 function exportSessionBackup() {

@@ -1,33 +1,34 @@
 // background.js - VTF Audio Transcription Extension
-// FIXED VERSION - Resolves processing delays and missing audio
 
 // Enhanced Configuration for VTF dynamic stream switching environment
 const CONFIG = {
   SAMPLE_RATE: 16000,
-  // Enhanced adaptive chunking settings for VTF feedback
-  CHUNK_DURATION_ACTIVE: 3,   // seconds - reduced for faster response in active rooms
-  CHUNK_DURATION_IDLE: 5,    // seconds - reduced for faster processing
-  MIN_CHUNK_SIZE: 0.5,        // seconds - much smaller minimum for faster response
-  MAX_CHUNK_SIZE: 12,        // seconds - reduced to prevent delays
-  SILENCE_THRESHOLD: 0.0001, // amplitude - much lower threshold based on VTF feedback
-  SILENCE_TIMEOUT: 1500,     // milliseconds - faster silence detection (1.5s)
-  // Enhanced speaker merging settings
-  SPEAKER_MERGE_WINDOW: 3000, // milliseconds - shorter window for faster switching
-  ACTIVITY_WINDOW: 3000,      // milliseconds - shorter tracking window
-  ACTIVITY_THRESHOLD: 2,      // number of speakers - threshold for considering room "busy"
-  // Enhanced processing settings for parallel processing
-  MAX_CONCURRENT_PROCESSING: 6, // increased for parallel processing as requested
-  // Reduced startup time for faster initial capture
-  STARTUP_MIN_DURATION: 1,    // seconds - faster startup for better UX
-  // Enhanced watchdog settings
-  STALL_IDLE_THRESHOLD: 1500, // milliseconds - faster buffer flush for responsiveness
-  STALL_MIN_DURATION: 0.5,    // seconds - process even very small chunks
+  // Enhanced Configuration for VTF
+  SAMPLE_RATE: 16000,
+  // Increased chunk sizes for better context
+  CHUNK_DURATION_ACTIVE: 4,   // seconds - better context for Whisper
+  CHUNK_DURATION_IDLE: 6,     // seconds - better for complete thoughts
+  MIN_CHUNK_SIZE: 3,          // seconds - minimum for quality transcription
+  MAX_CHUNK_SIZE: 10,         // seconds - reasonable maximum
+  SILENCE_THRESHOLD: 0.003,   // amplitude - proper threshold for speech
+  SILENCE_TIMEOUT: 2500,      // milliseconds - allow natural pauses
+  // Better speaker merging
+  SPEAKER_MERGE_WINDOW: 5000, // milliseconds - merge within 5 seconds
+  ACTIVITY_WINDOW: 5000,      // milliseconds
+  ACTIVITY_THRESHOLD: 2,      // number of speakers
+  // Processing settings  
+  MAX_CONCURRENT_PROCESSING: 3, // reduced for better quality
+  // Minimum audio duration for first chunk
+  STARTUP_MIN_DURATION: 3,    // seconds - ensure quality first chunk
+  // Watchdog settings
+  STALL_IDLE_THRESHOLD: 3000, // milliseconds - wait longer before forcing
+  STALL_MIN_DURATION: 2,      // seconds - minimum for watchdog
   // Memory management
-  MAX_TRANSCRIPTIONS: 1000,   // maximum transcriptions to keep in memory
-  TRANSCRIPTION_CLEANUP_KEEP: 500, // number of recent transcriptions to keep when cleaning up
-  // Enhanced stream switching support
-  STREAM_SWITCH_TOLERANCE: 500, // milliseconds - how quickly to detect stream switches
-  PRODUCER_TRACKING_TIMEOUT: 5000 // milliseconds - how long to track inactive producers
+  MAX_TRANSCRIPTIONS: 2000,   // support full day capture
+  TRANSCRIPTION_CLEANUP_KEEP: 1000,
+  // Stream management
+  STREAM_SWITCH_TOLERANCE: 1000, // milliseconds
+  PRODUCER_TRACKING_TIMEOUT: 10000 // milliseconds
 };
 
 // Store audio chunks and transcriptions
@@ -157,6 +158,13 @@ class ConversationProcessor {
     text = text.replace(/\bgonna\b/gi, 'going to');
     text = text.replace(/\bcause\b/gi, 'because');
     text = text.replace(/\bwanna\b/gi, 'want to');
+    
+    // Fix common trading room number patterns
+    text = text.replace(/\bseven eight\b/gi, '78');
+    text = text.replace(/\beight seven\b/gi, '87');
+    text = text.replace(/\bnine zero\b/gi, '90');
+    text = text.replace(/\bthree fifty\b/gi, '350');
+    text = text.replace(/\bfour hundred\b/gi, '400');
     
     // Fix contractions
     text = text.replace(/\bis\s+not\b/gi, "isn't");
@@ -681,11 +689,11 @@ async function processSpeakerBuffer(streamId, reason) {
   const maxSample = absVals.reduce((m, x) => (x > m ? x : m), 0);
   const avgSample = absVals.reduce((s, x) => s + x, 0) / absVals.length;
   
-  // adaptive silence gate: allow quieter chunks as long as average energy is present
-  const maxGate = 0.0001; // very low peak allowed
-  const avgGate = 0.00002; // very low RMS allowed
+  // Check energy BEFORE processing - proper thresholds for speech
+  const minRMS = 0.003;  // Good threshold for speech
+  const minPeak = 0.01;  // Reasonable peak threshold
   
-  if (maxSample < maxGate && avgSample < avgGate) {
+  if (maxSample < minPeak || avgSample < minRMS) {
     console.log(`[VTF Background] ${streamId} chunk below energy threshold (max=${maxSample.toFixed(6)}, avg=${avgSample.toFixed(6)}), skipping`);
     processingQueue.delete(streamId);
     updateBufferStatus();
@@ -695,9 +703,25 @@ async function processSpeakerBuffer(streamId, reason) {
     return;
   }
   
-  // Normalise chunk so Whisper sees a consistent level
-  const gain = 1 / (maxSample || 1);
-  const normalised = chunk.map(v => Math.max(-1, Math.min(1, v * gain)));
+  // Process audio with gentle compression instead of aggressive normalization
+  let processed;
+  
+  // Only process if audio has reasonable levels
+  if (maxSample > 0.1) {
+    // Gentle scaling - max 2x amplification
+    const gain = Math.min(2, 0.3 / maxSample);
+    processed = chunk.map(v => v * gain);
+  } else if (maxSample > 0.01) {
+    // Moderate amplification for quiet audio
+    const gain = Math.min(5, 0.2 / maxSample);
+    processed = chunk.map(v => v * gain);
+  } else {
+    // Very quiet - likely noise, minimal processing
+    processed = chunk;
+  }
+  
+  // Apply high-pass filter to remove low-frequency noise (80Hz)
+  const filtered = highPassFilter(processed, 80, CONFIG.SAMPLE_RATE);
   
   // Extract speaker name from streamId
   const speakerName = extractSpeakerName(streamId);
@@ -709,7 +733,7 @@ async function processSpeakerBuffer(streamId, reason) {
   
   try {
     // Process with Whisper API
-    const result = await processAudioChunk(new Float32Array(normalised), Date.now(), streamId);
+    const result = await processAudioChunk(new Float32Array(filtered), Date.now(), streamId);
     
     if (result && result.text) {
       // Add speaker name to result
@@ -935,6 +959,22 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
   throw lastError;
 }
 
+// Simple high-pass filter to remove low-frequency noise
+function highPassFilter(data, cutoff, sampleRate) {
+  const RC = 1.0 / (cutoff * 2 * Math.PI);
+  const dt = 1.0 / sampleRate;
+  const alpha = RC / (RC + dt);
+  
+  const filtered = new Float32Array(data.length);
+  filtered[0] = data[0];
+  
+  for (let i = 1; i < data.length; i++) {
+    filtered[i] = alpha * (filtered[i-1] + data[i] - data[i-1]);
+  }
+  
+  return filtered;
+}
+
 // Process audio chunk with Whisper API
 async function processAudioChunk(audioData, timestamp, streamId) {
   const startTime = Date.now();
@@ -980,12 +1020,15 @@ async function processAudioChunk(audioData, timestamp, streamId) {
     const wavBlob = float32ToWav(audioData);
     console.log('[VTF Background] WAV blob created:', wavBlob.size, 'bytes');
     
-    // Create form data
+    // Create form data with enhanced context for trading room
     const formData = new FormData();
     formData.append('file', wavBlob, 'audio.wav');
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
-    formData.append('response_format', 'verbose_json'); // Get timestamps and confidence scores
+    formData.append('response_format', 'verbose_json');
+    // Add trading room context
+    formData.append('prompt', 'Trading room conversation. Speakers: DP, Kira, Rickman. Topics: stocks, markets, prices, trading, technical analysis. Numbers are important.');
+    formData.append('temperature', '0'); // Consistent results
     
     console.log('[VTF Background] Sending to Whisper API...');
     

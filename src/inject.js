@@ -1,4 +1,4 @@
-// inject.js - Enhanced audio capture with stream switching support for VTF
+// src/inject.js - Enhanced audio capture with stream switching support for VTF
 (function() {
   console.log('[VTF Inject] Enhanced script loaded with stream switching support');
   
@@ -6,7 +6,6 @@
   let activeProcessors = new Map();
   let capturePaused = false;
   let workletLoaded = false;
-  let capturingTracks = new Set(); // Track active stream+track combinations
   let producerChannels = new Map(); // Map producer IDs to channel info
   let cleanupTimeouts = new Map(); // Debounced cleanup for stream switches
   
@@ -22,17 +21,17 @@
     };
   }
   
-  // Enhanced audio quality assessment with lowered thresholds
+  // Enhanced audio quality assessment with reasonable thresholds
   function assessAudioQuality(audioData) {
     const rms = Math.sqrt(audioData.reduce((sum, val) => sum + val * val, 0) / audioData.length);
     const maxSample = Math.max(...audioData.map(Math.abs));
     const dynamicRange = maxSample / (rms || 0.0001);
     
     let quality = 'poor';
-    // Lowered thresholds based on VTF feedback
-    if (rms > 0.001 && dynamicRange > 1.5) {
+    // Reasonable thresholds for speech
+    if (rms > 0.005 && dynamicRange > 2) {
       quality = 'good';
-    } else if (rms > 0.0005 || dynamicRange > 1.2) {
+    } else if (rms > 0.002 || dynamicRange > 1.5) {
       quality = 'fair';  
     }
     
@@ -44,7 +43,7 @@
     };
   }
   
-  // Reliably initialize AudioWorklet with enhanced VAD for VTF
+  // Reliably initialize AudioWorklet with proper VAD for VTF
   async function ensureAudioWorkletLoaded() {
     if (workletLoaded) return true;
     
@@ -55,27 +54,27 @@
       
       console.log('[VTF Inject] Loading enhanced AudioWorklet module...');
       await audioContext.audioWorklet.addModule(URL.createObjectURL(new Blob([`
-        // Enhanced AudioWorklet Processor for VTF with lowered thresholds
+        // Enhanced AudioWorklet Processor for VTF with proper thresholds
         class VTFAudioProcessor extends AudioWorkletProcessor {
           constructor() {
             super();
             this.audioBuffer = [];
-            this.chunkSize = 8000; // 0.5 seconds at 16kHz for faster response
+            this.chunkSize = 16000; // 1 second at 16kHz for better context
             
-            // Enhanced VAD parameters optimized for VTF based on feedback
+            // Proper VAD parameters for speech detection
             this.vadConfig = {
-              energyThreshold: 0.001,      // Lowered from 0.005 to capture more speech
-              zcrThreshold: 0.5,           // Adjusted for better speech detection
-              spectralCentroidThreshold: 800,  // Lowered for more inclusive detection
-              spectralRolloffThreshold: 1500,  // Lowered threshold
-              voiceProbabilityThreshold: 0.25, // Significantly lowered from 0.6 to 0.25
-              adaptiveWindow: 15,          // Faster adaptation for dynamic environment
-              hangoverFrames: 2            // Minimal hangover to prevent gaps
+              energyThreshold: 0.003,          // Reasonable threshold for speech
+              zcrThreshold: 0.4,               // Good for speech detection
+              spectralCentroidThreshold: 1000, // Speech frequency range
+              spectralRolloffThreshold: 2000,  // Speech frequency range  
+              voiceProbabilityThreshold: 0.5,  // Balanced threshold
+              adaptiveWindow: 20,              // Reasonable adaptation
+              hangoverFrames: 8                // Smooth detection
             };
             
             // Adaptive thresholding
             this.energyHistory = [];
-            this.noiseFloor = 0.001;     // Lower starting noise floor
+            this.noiseFloor = 0.002;     // Reasonable noise floor
             this.snrHistory = [];
             this.initialized = false;
             
@@ -87,12 +86,12 @@
             
             // Spectral analysis setup
             this.sampleRate = 16000;
-            this.fftSize = 256; // Smaller FFT for faster processing
+            this.fftSize = 256;
             
             // Listen for configuration updates
             this.port.onmessage = (event) => {
               if (event.data.type === 'configure') {
-                this.chunkSize = event.data.chunkSize || 8000;
+                this.chunkSize = event.data.chunkSize || 16000;
                 Object.assign(this.vadConfig, event.data.vadConfig || {});
               }
             };
@@ -126,7 +125,7 @@
             return { centroid, rolloff: centroid * 1.5 };
           }
           
-          // Enhanced VAD with lowered thresholds
+          // Proper VAD with reasonable thresholds
           performVAD(audioData) {
             const rms = Math.sqrt(audioData.reduce((sum, val) => sum + val * val, 0) / audioData.length);
             const maxSample = Math.max(...audioData.map(Math.abs));
@@ -137,10 +136,10 @@
               this.energyHistory.shift();
             }
             
-            // Initialize noise floor more aggressively
+            // Initialize noise floor
             if (!this.initialized && this.energyHistory.length >= 5) {
               const sortedEnergy = [...this.energyHistory].sort((a, b) => a - b);
-              this.noiseFloor = Math.max(0.0005, sortedEnergy[0]); // Much lower noise floor
+              this.noiseFloor = Math.max(0.001, sortedEnergy[0] * 1.5); // Reasonable noise floor
               this.initialized = true;
             }
             
@@ -152,27 +151,27 @@
             if (this.snrHistory.length > 5) this.snrHistory.shift();
             const avgSNR = this.snrHistory.reduce((a, b) => a + b, 0) / this.snrHistory.length;
             
-            // Multi-feature voice activity decision with lowered thresholds
+            // Multi-feature voice activity decision
             let voiceProbability = 0;
             
-            // Energy criterion (more generous)
-            if (rms > this.vadConfig.energyThreshold) voiceProbability += 0.4;
-            if (rms > this.vadConfig.energyThreshold * 2) voiceProbability += 0.2; // Bonus for strong signal
+            // Energy criterion
+            if (rms > this.vadConfig.energyThreshold) voiceProbability += 0.3;
+            if (rms > this.vadConfig.energyThreshold * 2) voiceProbability += 0.2;
             
             // ZCR criterion (voice typically has lower ZCR)
             if (zcr < this.vadConfig.zcrThreshold) voiceProbability += 0.2;
             
-            // Spectral features (more inclusive)
+            // Spectral features
             if (spectralFeatures.centroid > this.vadConfig.spectralCentroidThreshold) voiceProbability += 0.15;
             
-            // SNR criterion (lowered threshold)
-            if (avgSNR > 3) voiceProbability += 0.15; // Lowered from 5dB to 3dB
+            // SNR criterion
+            if (avgSNR > 6) voiceProbability += 0.15; // Reasonable SNR threshold
             
             // Dynamic range check
             const dynamicRange = maxSample / (rms || 0.0001);
-            if (dynamicRange > 1.5) voiceProbability += 0.1;
+            if (dynamicRange > 2) voiceProbability += 0.1;
             
-            // Decision logic with minimal hangover
+            // Decision logic with hangover
             const isVoiceCandidate = voiceProbability >= this.vadConfig.voiceProbabilityThreshold;
             
             if (isVoiceCandidate) {
@@ -187,11 +186,11 @@
               }
             }
             
-            // Quality assessment with lowered thresholds
+            // Quality assessment
             let quality = 'poor';
-            if (rms > 0.002 && maxSample < 0.95) {
-              quality = avgSNR > 8 ? 'good' : 'fair';
-            } else if (rms > 0.001) {
+            if (rms > 0.005 && maxSample < 0.95) {
+              quality = avgSNR > 10 ? 'good' : 'fair';
+            } else if (rms > 0.002) {
               quality = 'fair';
             }
             
@@ -223,12 +222,15 @@
                 
                 const vadResult = this.performVAD(chunk);
                 
-                this.port.postMessage({
-                  type: 'audioData',
-                  audioData: chunk,
-                  timestamp: Date.now(),
-                  vadResult: vadResult
-                });
+                // Only send chunks with voice activity or reasonable energy
+                if (vadResult.isVoice || vadResult.features.rms > 0.002) {
+                  this.port.postMessage({
+                    type: 'audioData',
+                    audioData: chunk,
+                    timestamp: Date.now(),
+                    vadResult: vadResult
+                  });
+                }
               }
             }
             
@@ -250,45 +252,30 @@
     }
   }
 
-  // Enhanced function to capture audio with proper stream/track tracking
+  // Simplified capture function using element ID as primary key
   async function captureAudioElement(audioElement) {
-    const streamId = audioElement.id;
+    const elementId = audioElement.id;
     
     if (capturePaused) return;
     
-    // Extract detailed stream and track information
+    // Extract stream and track information
     const mediaStream = audioElement.srcObject;
     if (!mediaStream || !mediaStream.getAudioTracks || mediaStream.getAudioTracks().length === 0) {
-      console.log(`[VTF Inject] No audio tracks found for: ${streamId}`);
+      console.log(`[VTF Inject] No audio tracks found for: ${elementId}`);
+      return;
+    }
+    
+    // Check if we already have a processor for this element
+    if (activeProcessors.has(elementId)) {
+      console.log(`[VTF Inject] Already have processor for element: ${elementId}`);
       return;
     }
     
     const audioTrack = mediaStream.getAudioTracks()[0];
     const trackId = audioTrack.id;
-    const producerId = streamId.replace('msRemAudio-', '');
+    const producerId = elementId.replace('msRemAudio-', '');
     
-    // Create unique capture key: elementId + streamId + trackId
-    const captureKey = `${streamId}:${mediaStream.id}:${trackId}`;
-    
-    // Check if we're already capturing this specific stream+track combination
-    if (capturingTracks.has(captureKey)) {
-      console.log(`[VTF Inject] Already capturing: ${captureKey}`);
-      return;
-    }
-    
-    // Check if this element has an old processor (stream/track switched)
-    if (activeProcessors.has(streamId)) {
-      const oldProcessor = activeProcessors.get(streamId);
-      if (oldProcessor.captureKey !== captureKey) {
-        console.log(`[VTF Inject] Stream switched for ${streamId}: ${oldProcessor.captureKey} → ${captureKey}`);
-        stopCapture(streamId); // Clean up old stream immediately
-      } else {
-        console.log(`[VTF Inject] Same stream+track already captured: ${captureKey}`);
-        return;
-      }
-    }
-    
-    console.log(`[VTF Inject] Starting enhanced capture: ${captureKey} (producer: ${producerId})`);
+    console.log(`[VTF Inject] Starting capture for element: ${elementId} (track: ${trackId})`);
     
     try {
       // Create audio context if needed
@@ -309,36 +296,35 @@
       const source = audioContext.createMediaStreamSource(mediaStream);
       let processor;
       
-      // Create enhanced channel info with full tracking
+      // Create channel info
       const channelInfo = {
-        streamId: streamId,
+        elementId: elementId,
         producerId: producerId,
         trackId: trackId,
         trackLabel: audioTrack.label || `Producer ${producerId.substring(0, 8)}`,
         mediaStreamId: mediaStream.id,
-        captureKey: captureKey,
         startTime: Date.now()
       };
       
-      // Store producer channel mapping for statistics
+      // Store producer channel mapping
       producerChannels.set(producerId, channelInfo);
       
       if (workletSuccess) {
-        // Use modern AudioWorklet with enhanced settings
+        // Use modern AudioWorklet
         processor = new AudioWorkletNode(audioContext, 'vtf-audio-processor');
         
-        // Configure worklet with optimized settings for VTF
+        // Configure worklet with proper settings
         processor.port.postMessage({
           type: 'configure',
-          chunkSize: 8000, // 0.5 seconds for faster response
+          chunkSize: 16000, // 1 second chunks at 16kHz
           vadConfig: {
-            energyThreshold: 0.001,    // Lowered based on feedback
-            zcrThreshold: 0.5,
-            spectralCentroidThreshold: 800,
-            spectralRolloffThreshold: 1500,
-            voiceProbabilityThreshold: 0.25, // Much lower threshold
-            adaptiveWindow: 15,
-            hangoverFrames: 2
+            energyThreshold: 0.003,
+            zcrThreshold: 0.4,
+            spectralCentroidThreshold: 1000,
+            spectralRolloffThreshold: 2000,
+            voiceProbabilityThreshold: 0.5,
+            adaptiveWindow: 20,
+            hangoverFrames: 8
           }
         });
         
@@ -347,16 +333,10 @@
           if (event.data.type === 'audioData') {
             const { audioData, timestamp, vadResult } = event.data;
             
-            // Enhanced debug logging
-            if (window.VTF_DEBUG_CAPTURE) {
-              const f = vadResult.features;
-              console.debug(`[VTF Inject] ${captureKey} chunk: voice=${vadResult.isVoice}, prob=${vadResult.probability.toFixed(3)}, rms=${f.rms.toFixed(6)}, snr=${f.snr.toFixed(1)}dB, quality=${vadResult.quality}`);
-            }
-            
-            // Send to content script with enhanced channel info
+            // Send to content script with channel info
             window.postMessage({
               type: 'VTF_AUDIO_DATA',
-              streamId: streamId,
+              streamId: elementId,
               audioData: audioData,
               timestamp: timestamp,
               vadResult: vadResult,
@@ -368,16 +348,16 @@
               isSilent: !vadResult.isVoice
             }, '*');
           }
-        }, `worklet VAD message handling for ${captureKey}`);
+        }, `worklet message handling for ${elementId}`);
         
-        console.log(`[VTF Inject] Using enhanced AudioWorklet processor for ${captureKey}`);
+        console.log(`[VTF Inject] Using AudioWorklet processor for ${elementId}`);
         
       } else {
-        // Enhanced fallback to ScriptProcessor with lowered thresholds
-        processor = audioContext.createScriptProcessor(2048, 1, 1); // Smaller buffer
+        // Fallback to ScriptProcessor
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
         let audioBuffer = [];
         let chunkCount = 0;
-        const CHUNK_SIZE = 8000; // 0.5 seconds at 16kHz
+        const CHUNK_SIZE = 16000; // 1 second at 16kHz
         
         processor.onaudioprocess = withErrorBoundary((e) => {
           const inputData = e.inputBuffer.getChannelData(0);
@@ -388,31 +368,27 @@
             audioBuffer = audioBuffer.slice(CHUNK_SIZE);
             chunkCount++;
             
-            // Enhanced quality assessment with much lower thresholds
+            // Quality assessment
             const qualityInfo = assessAudioQuality(chunk);
             
-            // Process many more chunks based on VTF feedback
-            if (qualityInfo.rms > 0.001 || qualityInfo.maxSample > 0.002) {
-              if (window.VTF_DEBUG_CAPTURE) {
-                console.debug(`[VTF Inject] ${captureKey} ScriptProcessor #${chunkCount}: rms=${qualityInfo.rms.toFixed(6)}, peak=${qualityInfo.maxSample.toFixed(5)}, quality=${qualityInfo.quality}`);
-              }
-              
+            // Process only chunks with sufficient audio
+            if (qualityInfo.rms > 0.003 || qualityInfo.maxSample > 0.01) {
               // Send to content script
               window.postMessage({
                 type: 'VTF_AUDIO_DATA',
-                streamId: streamId,
+                streamId: elementId,
                 audioData: chunk,
                 timestamp: Date.now(),
-                chunkId: chunkCount,
+                chunkId: `${elementId}-${chunkCount}`,
                 channelInfo: channelInfo,
                 maxSample: qualityInfo.maxSample,
                 audioQuality: qualityInfo.quality,
                 rms: qualityInfo.rms,
-                isSilent: qualityInfo.rms < 0.001
+                isSilent: qualityInfo.rms < 0.003
               }, '*');
             }
           }
-        }, `audio processing for ${captureKey}`);
+        }, `audio processing for ${elementId}`);
       }
       
       // Connect pipeline
@@ -421,41 +397,32 @@
         processor.connect(audioContext.destination);
       }
       
-      // Store for cleanup with enhanced metadata
-      activeProcessors.set(streamId, {
+      // Store for cleanup
+      activeProcessors.set(elementId, {
         source: source,
         processor: processor,
-        captureKey: captureKey,
         trackId: trackId,
         producerId: producerId,
         channelInfo: channelInfo,
         startTime: Date.now()
       });
       
-      // Track this capture
-      capturingTracks.add(captureKey);
-      
-      console.log(`[VTF Inject] Enhanced audio pipeline connected for ${captureKey}`);
+      console.log(`[VTF Inject] Audio pipeline connected for element ${elementId}`);
       
     } catch (error) {
-      console.error(`[VTF Inject] Error setting up capture for ${captureKey}:`, error);
+      console.error(`[VTF Inject] Error setting up capture for ${elementId}:`, error);
     }
   }
   
-  // Enhanced function to stop capture with proper cleanup
-  function stopCapture(streamId) {
-    const processorInfo = activeProcessors.get(streamId);
+  // Simplified stop capture function
+  function stopCapture(elementId) {
+    const processorInfo = activeProcessors.get(elementId);
     if (processorInfo) {
-      console.log(`[VTF Inject] Stopping capture for: ${streamId} (${processorInfo.captureKey})`);
+      console.log(`[VTF Inject] Stopping capture for element: ${elementId}`);
       try {
         processorInfo.source.disconnect();
         if (processorInfo.processor.disconnect) {
           processorInfo.processor.disconnect();
-        }
-        
-        // Clean up track tracking
-        if (processorInfo.captureKey) {
-          capturingTracks.delete(processorInfo.captureKey);
         }
         
         // Clean up producer mapping
@@ -464,28 +431,28 @@
         }
         
       } catch (e) {
-        console.warn(`[VTF Inject] Error disconnecting ${streamId}:`, e);
+        console.warn(`[VTF Inject] Error disconnecting ${elementId}:`, e);
       }
-      activeProcessors.delete(streamId);
+      activeProcessors.delete(elementId);
     }
   }
   
-  // Enhanced function to handle stopTalking with debounced cleanup
-  function handleStopTalking(streamId) {
+  // Debounced cleanup for stream switching
+  function handleStopTalking(elementId) {
     // Cancel any existing cleanup timeout
-    if (cleanupTimeouts.has(streamId)) {
-      clearTimeout(cleanupTimeouts.get(streamId));
+    if (cleanupTimeouts.has(elementId)) {
+      clearTimeout(cleanupTimeouts.get(elementId));
     }
     
-    // Set a 1.5-second delay before cleanup (shorter for faster response)
-    cleanupTimeouts.set(streamId, setTimeout(() => {
-      stopCapture(streamId);
-      cleanupTimeouts.delete(streamId);
-      console.log(`[VTF Inject] Delayed cleanup completed for ${streamId}`);
-    }, 1500));
+    // Set a 5-second delay before cleanup to ensure buffers are processed
+    cleanupTimeouts.set(elementId, setTimeout(() => {
+      stopCapture(elementId);
+      cleanupTimeouts.delete(elementId);
+      console.log(`[VTF Inject] Delayed cleanup completed for ${elementId}`);
+    }, 5000)); // 5 seconds to ensure all audio is processed
   }
   
-  // Enhanced MutationObserver with better stream detection
+  // MutationObserver for detecting audio elements
   const observer = new MutationObserver(withErrorBoundary((mutations) => {
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
@@ -521,9 +488,9 @@
         }
       });
     });
-  }, 'enhanced mutation observer'));
+  }, 'mutation observer'));
   
-  // Start observing with enhanced options
+  // Start observing
   observer.observe(document.body, {
     childList: true,
     subtree: true,
@@ -539,7 +506,7 @@
     }
   });
   
-  // Enhanced event listeners
+  // Play event listener
   document.addEventListener('play', (e) => {
     if (e.target.id && e.target.id.startsWith('msRemAudio-')) {
       console.log(`[VTF Inject] Play event for: ${e.target.id}`);
@@ -577,7 +544,7 @@
         audioContext.resume();
       }
       
-      // Aggressive re-scan of existing audio elements
+      // Re-scan existing audio elements
       document.querySelectorAll('audio[id^="msRemAudio-"]').forEach(audio => {
         if (audio.srcObject || audio.src) {
           console.log(`[VTF Inject] Re-capturing existing element: ${audio.id}`);
@@ -587,5 +554,5 @@
     }
   });
   
-  console.log('[VTF Inject] Enhanced monitoring active - ready for dynamic stream switching');
+  console.log('[VTF Inject] Ready for audio capture with improved processing');
 })();
