@@ -49,7 +49,8 @@ let lastProcessTime = Date.now();
 let silenceTimers = new Map();    
 let recentActivity = [];          
 let processingQueue = new Set();
-let lastTranscripts = new Map();  
+let lastTranscripts = new Map();
+let processedChunks = new Set(); // Track processed chunk IDs to prevent duplicates  
 
 const speakerAliasMap = new Map();
 
@@ -208,6 +209,10 @@ class ConversationProcessor {
       this.completedSegments = this.completedSegments.slice(-50);
     }
   }
+  
+  extractSpeakerName(streamId) {
+    return extractSpeakerName(streamId);
+  }
 }
 
 // Create global conversation processor
@@ -284,7 +289,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // Handle audio data with speaker-aware buffering
       if (request.audioData && request.audioData.length > 0) {
         const streamId = request.streamId || 'unknown';
-        console.log(`[VTF Background] Processing audio chunk: ${request.audioData.length} samples from stream ${streamId}`);
+        const chunkId = request.chunkId || `${streamId}-${request.timestamp}`;
+        
+        // Check for duplicate chunks
+        if (processedChunks.has(chunkId)) {
+          console.log(`[VTF Background] Skipping duplicate chunk: ${chunkId}`);
+          sendResponse({ received: true, ignored: true, reason: 'duplicate' });
+          return true;
+        }
+        
+        // Mark chunk as processed
+        processedChunks.add(chunkId);
+        
+        // Clean old processed chunks to prevent memory leak (keep last 1000)
+        if (processedChunks.size > 1000) {
+          const oldChunks = Array.from(processedChunks).slice(0, 500);
+          oldChunks.forEach(id => processedChunks.delete(id));
+        }
+        
+        console.log(`[VTF Background] Processing audio chunk: ${request.audioData.length} samples from stream ${streamId} (ID: ${chunkId})`);
         
         // Initialize speaker buffer if needed
         if (!speakerBuffers.has(streamId)) {
@@ -304,11 +327,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Track recent activity for adaptive chunking
         trackSpeechActivity(streamId);
         
-        // Store the chunk metadata
+        // Store the chunk metadata with VAD results and channel info
         audioChunks.push({
           data: request.audioData,
           timestamp: request.timestamp,
-          streamId: streamId
+          streamId: streamId,
+          vadResult: request.vadResult,
+          channelInfo: request.channelInfo
         });
         
         // Send visual feedback to popup
@@ -356,6 +381,67 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const totalBufferSize = Array.from(speakerBuffers.values())
         .reduce((sum, data) => sum + data.buffer.length, 0);
       
+      // Calculate VAD statistics
+      const recentChunks = audioChunks.slice(-10);
+      const vadStats = {
+        voiceActivity: 0,
+        avgProbability: 0,
+        avgSNR: 0,
+        avgSpectralCentroid: 0
+      };
+      
+      // Calculate channel statistics
+      const channelStats = {};
+      const uniqueChannels = new Set();
+      
+      if (recentChunks.length > 0) {
+        let voiceCount = 0;
+        let probSum = 0;
+        let snrSum = 0;
+        let centroidSum = 0;
+        let validVadCount = 0;
+        
+        recentChunks.forEach(chunk => {
+          if (chunk.vadResult) {
+            validVadCount++;
+            if (chunk.vadResult.isVoice) voiceCount++;
+            probSum += chunk.vadResult.probability;
+            snrSum += chunk.vadResult.features.snr;
+            centroidSum += chunk.vadResult.features.spectralCentroid;
+          }
+          
+          // Track channel information
+          if (chunk.channelInfo && chunk.channelInfo.trackId) {
+            const trackId = chunk.channelInfo.trackId;
+            uniqueChannels.add(trackId);
+            
+            if (!channelStats[trackId]) {
+              channelStats[trackId] = {
+                trackId: trackId,
+                trackLabel: chunk.channelInfo.trackLabel || 'Unknown',
+                streamId: chunk.channelInfo.streamId,
+                chunkCount: 0,
+                voiceChunks: 0,
+                lastActivity: chunk.timestamp
+              };
+            }
+            
+            channelStats[trackId].chunkCount++;
+            if (chunk.vadResult && chunk.vadResult.isVoice) {
+              channelStats[trackId].voiceChunks++;
+            }
+            channelStats[trackId].lastActivity = Math.max(channelStats[trackId].lastActivity, chunk.timestamp);
+          }
+        });
+        
+        if (validVadCount > 0) {
+          vadStats.voiceActivity = (voiceCount / validVadCount * 100).toFixed(1);
+          vadStats.avgProbability = (probSum / validVadCount).toFixed(3);
+          vadStats.avgSNR = (snrSum / validVadCount).toFixed(2);
+          vadStats.avgSpectralCentroid = Math.round(centroidSum / validVadCount);
+        }
+      }
+      
       const status = {
         isCapturing, 
         chunksReceived: audioChunks.length,
@@ -366,6 +452,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         activeSpeakers: speakerBuffers.size,
         isProcessing: processingQueue.size > 0,
         speechActivity: getActivityLevel(),
+        vadStats: vadStats,
+        channelStats: {
+          activeChannels: uniqueChannels.size,
+          channels: Object.values(channelStats).map(ch => ({
+            ...ch,
+            voiceActivity: ch.chunkCount > 0 ? ((ch.voiceChunks / ch.chunkCount) * 100).toFixed(1) : '0.0',
+            timeSinceActivity: Date.now() - ch.lastActivity
+          }))
+        },
         performance: {
           apiCalls: performanceMetrics.apiCalls,
           avgResponseTime: Math.round(performanceMetrics.avgResponseTime),
@@ -919,6 +1014,11 @@ async function processAudioChunk(audioData, timestamp, streamId) {
         avgConfidence = confidenceSum / result.segments.length;
       }
       
+      // Get channel info from recent audio chunks for this stream
+      const recentChunk = audioChunks.find(chunk => 
+        chunk.streamId === streamId && Math.abs(chunk.timestamp - timestamp) < 2000
+      );
+      
       const transcription = {
         text: result.text,
         timestamp: timestamp,
@@ -926,7 +1026,8 @@ async function processAudioChunk(audioData, timestamp, streamId) {
         streamId: streamId,
         confidence: avgConfidence,
         language: result.language || 'en',
-        segments: result.segments || []
+        segments: result.segments || [],
+        channelInfo: recentChunk?.channelInfo || {}
       };
       
       // Track successful response time
@@ -1104,7 +1205,7 @@ setInterval(() => {
 }, 5000); // Increased to 5s for less frequent cleanup
 
 // -----------------------------------------
-// Watchdog: flush small idle buffers
+// Watchdog: flush small idle buffers + conversation processing
 // -----------------------------------------
 setInterval(() => {
   speakerBuffers.forEach((data, streamId) => {
@@ -1116,6 +1217,9 @@ setInterval(() => {
       processSpeakerBuffer(streamId, 'watchdog');
     }
   });
+  
+  // Check for completed conversation segments
+  conversationProcessor.checkForCompletedSegments();
 }, 2000);
 
 // Log when service worker starts

@@ -313,6 +313,18 @@ a:hover {
   color: var(--vtf-danger);
 }
 
+.vtf-metric-value.high {
+  color: var(--vtf-success);
+}
+
+.vtf-metric-value.medium {
+  color: var(--vtf-warning);
+}
+
+.vtf-metric-value.low {
+  color: var(--vtf-danger);
+}
+
 .vtf-metric-label {
   font-size: var(--vtf-font-size-xs);
   color: var(--vtf-text-muted);
@@ -584,6 +596,86 @@ body.vtf-popup {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--vtf-gray-500);
+}
+
+/* Channel list styles */
+.vtf-channel-list {
+  margin-top: var(--vtf-space-2);
+}
+
+.vtf-channel-empty {
+  color: var(--vtf-text-muted);
+  font-size: var(--vtf-font-size-xs);
+  text-align: center;
+  padding: var(--vtf-space-2);
+  background: var(--vtf-gray-700);
+  border-radius: var(--vtf-radius);
+  font-style: italic;
+}
+
+.vtf-channel-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--vtf-space-1) var(--vtf-space-2);
+  margin-bottom: var(--vtf-space-1);
+  background: var(--vtf-gray-700);
+  border-radius: var(--vtf-radius);
+  font-size: var(--vtf-font-size-xs);
+  border-left: 3px solid #9C27B0;
+  transition: background-color 0.2s ease;
+}
+
+.vtf-channel-item:last-child {
+  margin-bottom: 0;
+}
+
+.vtf-channel-item:hover {
+  background: var(--vtf-gray-600);
+}
+
+.vtf-channel-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.vtf-channel-id {
+  font-family: 'Courier New', monospace;
+  color: #9C27B0;
+  font-weight: 500;
+  font-size: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vtf-channel-label {
+  color: var(--vtf-text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vtf-channel-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 9px;
+  color: var(--vtf-text-muted);
+}
+
+.vtf-channel-voice-activity {
+  color: var(--vtf-success);
+  font-weight: 500;
+}
+
+.vtf-channel-time {
+  color: var(--vtf-gray-400);
 }
 
 /* Status Section */

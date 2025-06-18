@@ -68,7 +68,13 @@ function handleAudioMessage(event) {
     }
     
     if (DEBUG_CAPTURE) {
-      console.debug(`[Content] Received audio data: ${event.data.audioData.length} samples (peak ${event.data.maxSample?.toFixed(5)}, quality: ${event.data.audioQuality || 'unknown'})`);
+      const vadInfo = event.data.vadResult;
+      if (vadInfo) {
+        const f = vadInfo.features;
+        console.debug(`[Content] VAD data: ${event.data.audioData.length} samples, voice=${vadInfo.isVoice}, prob=${vadInfo.probability.toFixed(3)}, quality=${vadInfo.quality}, SNR=${f.snr.toFixed(2)}`);
+      } else {
+        console.debug(`[Content] Received audio data: ${event.data.audioData.length} samples (peak ${event.data.maxSample?.toFixed(5)}, quality: ${event.data.audioQuality || 'unknown'})`);
+      }
     }
     
     chunksSent++;
@@ -77,22 +83,36 @@ function handleAudioMessage(event) {
     }
     
     // Check if extension context is still valid
-    // Skip silent chunks to reduce API calls
-    if (event.data.isSilent && event.data.audioQuality === 'poor') {
-      if (DEBUG_CAPTURE) {
-        console.debug(`[Content] Skipping silent chunk from ${event.data.streamId}`);
+    // Advanced VAD filtering - skip non-voice chunks with low confidence
+    if (event.data.vadResult) {
+      const vad = event.data.vadResult;
+      if (!vad.isVoice && vad.probability < 0.3 && vad.quality === 'poor') {
+        if (DEBUG_CAPTURE) {
+          console.debug(`[Content] Skipping non-voice chunk from ${event.data.streamId} (prob=${vad.probability.toFixed(3)})`);
+        }
+        return;
       }
-      return;
+    } else {
+      // Legacy fallback for silent chunks
+      if (event.data.isSilent && event.data.audioQuality === 'poor') {
+        if (DEBUG_CAPTURE) {
+          console.debug(`[Content] Skipping silent chunk from ${event.data.streamId}`);
+        }
+        return;
+      }
     }
     
     try {
-      // Send to background script
+      // Send to background script with VAD data
       chrome.runtime.sendMessage({
         type: 'audioData',
         audioData: event.data.audioData,
         timestamp: event.data.timestamp,
         streamId: event.data.streamId,
         chunkNumber: chunksSent,
+        vadResult: event.data.vadResult,
+        channelInfo: event.data.channelInfo,
+        // Legacy compatibility
         isSilent: event.data.isSilent,
         audioQuality: event.data.audioQuality
       }, response => {
@@ -213,21 +233,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return false; // Synchronous response
     }
     
-    if (request.type === 'newTranscription') {
-      try {
-        validateMessage(request, 'newTranscription');
-      } catch (error) {
-        console.warn('[Content] Invalid transcription message:', error.message);
-        sendResponse({received: false, error: error.message});
-        return false;
-      }
-      
-      console.log(`[Content] New transcription received: "${request.transcription.text}"`);
-      console.log(`[Transcription ${new Date(request.transcription.timestamp).toLocaleTimeString()}]: ${request.transcription.text}`);
-      displayTranscription(request.transcription, request.merged);
-      // Send acknowledgment
+    if (request.type === 'processedTranscription') {
+      console.log(`[Content] Processed segment received: "${request.segment.text}"`);
+      displayProcessedSegment(request.segment);
       sendResponse({received: true});
-      return false; // Synchronous response
+      return false;
+    }
+    
+    if (request.type === 'newTranscription') {
+      // Legacy handler - shouldn't be used with quality mode
+      console.warn('[Content] Received legacy newTranscription - ignoring');
+      sendResponse({received: true});
+      return false;
     }
     
     if (request.type === 'buffer_status') {
@@ -276,11 +293,32 @@ function createTranscriptionDisplay() {
     cursor: move;
   `;
   
+  // Add CSS animations
+  const animationStyle = document.createElement('style');
+  animationStyle.textContent = `
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateX(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+  `;
+  document.head.appendChild(animationStyle);
+  
   // Make the display draggable
   makeDraggable(display);
   
   // Header with status indicators
   const header = document.createElement('div');
+  header.className = 'vtf-header';
   header.style.cssText = `
     padding: 12px 15px;
     background: rgba(255, 255, 255, 0.05);
@@ -288,6 +326,7 @@ function createTranscriptionDisplay() {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    cursor: move;
   `;
   
   header.innerHTML = `
@@ -331,26 +370,6 @@ function createTranscriptionDisplay() {
         cursor: pointer;
         font-weight: 500;
       ">Daily MD</button>
-      <button id="vtf-backup-btn" style="
-        background: rgba(156, 39, 176, 0.2);
-        border: 1px solid rgba(156, 39, 176, 0.4);
-        color: #9C27B0;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-size: 10px;
-        cursor: pointer;
-        font-weight: 500;
-      ">Backup</button>
-      <button id="vtf-restore-btn" style="
-        background: rgba(255, 152, 0, 0.2);
-        border: 1px solid rgba(255, 152, 0, 0.4);
-        color: #FF9800;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-size: 10px;
-        cursor: pointer;
-        font-weight: 500;
-      ">Restore</button>
     </div>
   `;
   
@@ -497,38 +516,105 @@ function createTranscriptionDisplay() {
     console.error('[Content] Daily export button not found');
   }
   
-  const backupBtn = document.getElementById('vtf-backup-btn');
-  if (backupBtn) {
-    backupBtn.onclick = (e) => {
-      console.log('[Content] Backup button clicked');
-      e.preventDefault();
-      e.stopPropagation();
-      exportSessionBackup();
-    };
-    console.log('[Content] Backup button handler attached');
-  } else {
-    console.error('[Content] Backup button not found');
+
+}
+
+// Display processed conversation segment with professional formatting
+function displayProcessedSegment(segment) {
+  const display = document.getElementById('vtf-transcription-display');
+  if (!display) {
+    createTranscriptionDisplay();
+    return displayProcessedSegment(segment);
   }
   
-  const restoreBtn = document.getElementById('vtf-restore-btn');
-  if (restoreBtn) {
-    restoreBtn.onclick = (e) => {
-      console.log('[Content] Restore button clicked');
-      e.preventDefault();
-      e.stopPropagation();
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.json';
-      input.onchange = importSessionBackup;
-      input.click();
-    };
-    console.log('[Content] Restore button handler attached');
-  } else {
-    console.error('[Content] Restore button not found');
+  display.style.display = 'block';
+  const content = document.getElementById('vtf-transcription-content');
+  
+  const segmentElement = document.createElement('div');
+  segmentElement.className = 'vtf-segment';
+  segmentElement.style.cssText = `
+    margin-bottom: 16px;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+    border-left: 3px solid #4CAF50;
+    animation: slideIn 0.3s ease-out;
+  `;
+  
+  const startTime = new Date(segment.startTime);
+  const duration = segment.duration ? `${segment.duration.toFixed(1)}s` : '';
+  const confidence = segment.confidence ? ` (${Math.round(segment.confidence * 100)}%)` : '';
+  
+  // Format channel info if available
+  const channelInfo = segment.channelInfo || {};
+  const channelDisplay = channelInfo.trackId ? 
+    `<span style="
+      background: rgba(156, 39, 176, 0.2);
+      color: #9C27B0;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 9px;
+      font-weight: 500;
+    " title="Track: ${channelInfo.trackId}&#10;Label: ${channelInfo.trackLabel || 'N/A'}&#10;Stream: ${channelInfo.streamId || 'N/A'}">[CH:${channelInfo.trackId.substring(0, 6)}...]</span>` : '';
+  
+  segmentElement.innerHTML = `
+    <div style="
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 11px;
+      color: #888;
+    ">
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <span style="font-weight: 600; color: #4CAF50;">${segment.speaker}</span>
+        <span style="
+          background: rgba(33, 150, 243, 0.2);
+          color: #2196F3;
+          padding: 2px 6px;
+          border-radius: 3px;
+          font-size: 10px;
+          font-weight: 500;
+        ">${segment.topic}</span>
+        ${channelDisplay}
+      </div>
+      <div style="display: flex; gap: 8px; color: #666;">
+        <span>${startTime.toLocaleTimeString()}</span>
+        ${duration ? `<span>${duration}</span>` : ''}
+        ${confidence ? `<span>${confidence}</span>` : ''}
+      </div>
+    </div>
+    <div style="
+      color: #fff;
+      line-height: 1.5;
+      font-size: 14px;
+      text-align: left;
+    ">${segment.text}</div>
+  `;
+  
+  content.insertBefore(segmentElement, content.firstChild);
+  
+  // Scroll to top (newest content)
+  const contentWrapper = content.parentElement;
+  contentWrapper.scrollTop = 0;
+  
+  // Keep only last 50 segments
+  while (content.children.length > 50) {
+    content.removeChild(content.lastChild);
+  }
+  
+  // Update stats
+  updateDisplayStats();
+}
+
+function updateDisplayStats() {
+  const chunksElement = document.getElementById('vtf-chunks-sent');
+  if (chunksElement) {
+    chunksElement.textContent = chunksSent;
   }
 }
 
-// Display transcription with merge handling
+// Legacy display function (kept for compatibility)
 function displayTranscription(transcription, merged = false) {
   createTranscriptionDisplay();
   
@@ -754,7 +840,7 @@ function filterTranscripts(searchTerm) {
   const content = document.getElementById('vtf-transcription-content');
   if (!content) return;
   
-  const entries = content.querySelectorAll('.vtf-transcript-entry');
+  const entries = content.querySelectorAll('.vtf-segment, .vtf-transcript-entry');
   const term = searchTerm.toLowerCase().trim();
   
   entries.forEach(entry => {
@@ -768,15 +854,15 @@ function filterTranscripts(searchTerm) {
       entry.style.display = shouldShow ? '' : 'none';
       
       if (shouldShow) {
-        // Highlight matching text
-        const textElement = entry.querySelector('.vtf-transcript-text');
+        // Highlight matching text in both old and new format
+        const textElement = entry.querySelector('.vtf-transcript-text') || entry.querySelector('div:last-child');
         if (textElement) {
           const originalText = textElement.dataset.originalText || textElement.textContent;
           textElement.dataset.originalText = originalText;
           
           if (term) {
             const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-            const highlightedText = originalText.replace(regex, '<mark style="background: rgba(255, 255, 0, 0.3); color: white;">$1</mark>');
+            const highlightedText = originalText.replace(regex, '<mark style="background: rgba(255, 255, 0, 0.3); color: white; padding: 2px 4px; border-radius: 2px;">$1</mark>');
             textElement.innerHTML = highlightedText;
           } else {
             textElement.textContent = originalText;

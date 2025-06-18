@@ -25,6 +25,41 @@
     </div>
     
     <div class="vtf-section">
+      <h3 class="vtf-section-title">Session Management</h3>
+      <p class="vtf-mb-4">Backup and restore your transcription sessions. Session backups include all transcriptions, speaker mappings, and performance metrics.</p>
+      
+      <div class="vtf-grid vtf-grid-2">
+        <button type="button" id="backupSession" class="vtf-btn vtf-btn-primary">
+          📁 Backup Session
+        </button>
+        <button type="button" id="restoreSession" class="vtf-btn vtf-btn-secondary">
+          📂 Restore Session
+        </button>
+      </div>
+      
+      <div class="vtf-message vtf-hidden" id="sessionStatus"></div>
+      <input type="file" id="sessionFileInput" accept=".json" style="display: none;">
+      
+      <div class="vtf-mt-4">
+        <h4>Session Statistics</h4>
+        <div class="vtf-grid vtf-grid-3" style="gap: 12px; margin-top: 12px;">
+          <div class="vtf-metric">
+            <div class="vtf-metric-value" id="currentTranscripts">0</div>
+            <div class="vtf-metric-label">Transcripts</div>
+          </div>
+          <div class="vtf-metric">
+            <div class="vtf-metric-value" id="currentSpeakers">0</div>
+            <div class="vtf-metric-label">Speakers</div>
+          </div>
+          <div class="vtf-metric">
+            <div class="vtf-metric-value" id="sessionDuration">0m</div>
+            <div class="vtf-metric-label">Duration</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="vtf-section">
       <h3 class="vtf-section-title">About</h3>
       <p>This extension captures and transcribes audio from Virtual Trading Floor sessions using OpenAI's Whisper API.</p>
       <p class="vtf-mt-3">Get your API key at: <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a></p>

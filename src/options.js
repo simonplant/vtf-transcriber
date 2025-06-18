@@ -6,6 +6,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const testBtn = document.getElementById('testApiKey');
   const saveStatus = document.getElementById('saveStatus');
   
+  // Session management elements
+  const backupBtn = document.getElementById('backupSession');
+  const restoreBtn = document.getElementById('restoreSession');
+  const sessionStatus = document.getElementById('sessionStatus');
+  const sessionFileInput = document.getElementById('sessionFileInput');
+  const currentTranscripts = document.getElementById('currentTranscripts');
+  const currentSpeakers = document.getElementById('currentSpeakers');
+  const sessionDuration = document.getElementById('sessionDuration');
+  
   console.log('[Options] DOM loaded, elements found:', {
     apiKeyInput: !!apiKeyInput,
     saveBtn: !!saveBtn,
@@ -23,6 +32,9 @@ document.addEventListener('DOMContentLoaded', () => {
       showStatus('No API key configured', 'error');
     }
   });
+  
+  // Load session statistics
+  updateSessionStats();
   
   // Save settings
   if (saveBtn) {
@@ -126,6 +138,109 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   
+  // Session Management Functions
+  if (backupBtn) {
+    backupBtn.addEventListener('click', () => {
+      console.log('[Options] Backup button clicked');
+      
+      chrome.runtime.sendMessage({type: 'exportSessionData'}, (response) => {
+        if (chrome.runtime.lastError) {
+          showSessionStatus('Failed to create backup: ' + chrome.runtime.lastError.message, 'error');
+          return;
+        }
+        
+        if (!response || !response.sessionData) {
+          showSessionStatus('No session data available for backup', 'error');
+          return;
+        }
+        
+        const sessionData = response.sessionData;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        
+        // Create and download file
+        const blob = new Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `vtf-session-backup-${timestamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        showSessionStatus(`Session backup created (${sessionData.transcriptions.length} transcripts)`, 'success');
+      });
+    });
+  }
+  
+  if (restoreBtn) {
+    restoreBtn.addEventListener('click', () => {
+      sessionFileInput.click();
+    });
+  }
+  
+  if (sessionFileInput) {
+    sessionFileInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const sessionData = JSON.parse(e.target.result);
+          
+          // Validate session data structure
+          if (!sessionData.transcriptions || !Array.isArray(sessionData.transcriptions)) {
+            showSessionStatus('Invalid backup file format', 'error');
+            return;
+          }
+          
+          // Send to background script for restoration
+          chrome.runtime.sendMessage({type: 'importSessionData', sessionData: sessionData}, (response) => {
+            if (chrome.runtime.lastError) {
+              showSessionStatus('Failed to restore session: ' + chrome.runtime.lastError.message, 'error');
+              return;
+            }
+            
+            showSessionStatus(`Session restored successfully (${sessionData.transcriptions.length} transcripts)`, 'success');
+            updateSessionStats(); // Refresh stats after restore
+          });
+          
+        } catch (error) {
+          showSessionStatus('Error reading backup file: ' + error.message, 'error');
+        }
+      };
+      reader.readAsText(file);
+      
+      // Clear the input for next use
+      event.target.value = '';
+    });
+  }
+  
+  function updateSessionStats() {
+    chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
+      if (chrome.runtime.lastError || !response) return;
+      
+      const transcripts = response.transcriptions || [];
+      if (currentTranscripts) currentTranscripts.textContent = transcripts.length;
+      
+      // Count unique speakers
+      const speakers = new Set(transcripts.map(t => t.speaker)).size;
+      if (currentSpeakers) currentSpeakers.textContent = speakers;
+      
+      // Calculate duration
+      if (transcripts.length > 0) {
+        const start = new Date(transcripts[0].timestamp);
+        const end = new Date(transcripts[transcripts.length - 1].timestamp);
+        const durationMs = end - start;
+        const durationMins = Math.round(durationMs / 60000);
+        if (sessionDuration) sessionDuration.textContent = `${durationMins}m`;
+      } else {
+        if (sessionDuration) sessionDuration.textContent = '0m';
+      }
+    });
+  }
+  
   function showStatus(message, type) {
     console.log('[Options] Status:', type, message);
     
@@ -146,6 +261,18 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => {
       saveStatus.classList.add('vtf-hidden');
     }, 3000);
+  }
+  
+  function showSessionStatus(message, type) {
+    console.log('[Options] Session Status:', type, message);
+    
+    sessionStatus.textContent = message;
+    sessionStatus.className = 'vtf-message vtf-message-' + type;
+    sessionStatus.classList.remove('vtf-hidden');
+    
+    setTimeout(() => {
+      sessionStatus.classList.add('vtf-hidden');
+    }, 4000);
   }
   
   // Debug helper - Press Ctrl+Shift+D

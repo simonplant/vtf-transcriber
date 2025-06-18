@@ -20,6 +20,16 @@ const audioQuality = document.getElementById('audioQuality');
 const currentTranscript = document.getElementById('currentTranscript');
 const errorMessage = document.getElementById('errorMessage');
 const successMessage = document.getElementById('successMessage');
+// VAD elements
+const voiceActivity = document.getElementById('voiceActivity');
+const vadProbability = document.getElementById('vadProbability');
+const signalNoise = document.getElementById('signalNoise');
+const spectralCentroid = document.getElementById('spectralCentroid');
+
+// Channel elements
+const activeChannels = document.getElementById('activeChannels');
+const totalTracks = document.getElementById('totalTracks');
+const channelList = document.getElementById('channelList');
 
 // State
 let isTranscribing = false;
@@ -388,6 +398,45 @@ function formatTimeSince(ms) {
   return `${Math.floor(ms / 3600000)}h ago`;
 }
 
+// Update channel display
+function updateChannelDisplay(channelStats) {
+  if (activeChannels) {
+    activeChannels.textContent = channelStats.activeChannels || 0;
+    activeChannels.className = channelStats.activeChannels > 0 ? 'vtf-metric-value high' : 'vtf-metric-value';
+  }
+  
+  if (totalTracks) {
+    totalTracks.textContent = channelStats.channels ? channelStats.channels.length : 0;
+  }
+  
+  if (channelList) {
+    const channels = channelStats.channels || [];
+    
+    if (channels.length === 0) {
+      channelList.innerHTML = '<div class="vtf-channel-empty">No active channels</div>';
+    } else {
+      channelList.innerHTML = channels.map(channel => {
+        const timeAgo = formatTimeSince(channel.timeSinceActivity);
+        const voicePercent = parseFloat(channel.voiceActivity);
+        const voiceClass = voicePercent > 50 ? 'vtf-channel-voice-activity' : '';
+        
+        return `
+          <div class="vtf-channel-item" title="Stream: ${channel.streamId || 'N/A'}">
+            <div class="vtf-channel-info">
+              <div class="vtf-channel-id">${channel.trackId.substring(0, 12)}...</div>
+              <div class="vtf-channel-label">${channel.trackLabel || 'Unknown Track'}</div>
+            </div>
+            <div class="vtf-channel-stats">
+              <div class="${voiceClass}">${channel.voiceActivity}% voice</div>
+              <div class="vtf-channel-time">${timeAgo}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+}
+
 // Update current transcript preview
 function updateTranscriptPreview() {
   chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
@@ -449,6 +498,35 @@ function checkStatus() {
       // Update activity display
       updateActivityDisplay(response);
       
+      // Update VAD statistics if available
+      if (response.vadStats) {
+        const vad = response.vadStats;
+        voiceActivity.textContent = `${vad.voiceActivity}%`;
+        vadProbability.textContent = vad.avgProbability;
+        signalNoise.textContent = vad.avgSNR;
+        spectralCentroid.textContent = vad.avgSpectralCentroid;
+        
+        // Color code voice activity
+        const voicePercent = parseFloat(vad.voiceActivity);
+        if (voicePercent > 70) {
+          voiceActivity.className = 'vtf-metric-value high';
+        } else if (voicePercent > 30) {
+          voiceActivity.className = 'vtf-metric-value medium';
+        } else {
+          voiceActivity.className = 'vtf-metric-value low';
+        }
+        
+        // Color code SNR
+        const snrValue = parseFloat(vad.avgSNR);
+        if (snrValue > 10) {
+          signalNoise.className = 'vtf-metric-value high';
+        } else if (snrValue > 5) {
+          signalNoise.className = 'vtf-metric-value medium';
+        } else {
+          signalNoise.className = 'vtf-metric-value low';
+        }
+      }
+      
       // Update performance metrics if available
       if (response.performance) {
         performanceMetrics.innerHTML = `
@@ -456,6 +534,11 @@ function checkStatus() {
           <span>Avg: ${response.performance.avgResponseTime}ms</span>
           <span>Errors: ${response.performance.errorRate}%</span>
         `;
+      }
+      
+      // Update channel information if available
+      if (response.channelStats) {
+        updateChannelDisplay(response.channelStats);
       }
     }
   });

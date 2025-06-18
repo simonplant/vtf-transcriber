@@ -55,6 +55,47 @@
     </div>
   </div>
 
+  <!-- Voice Activity Detection -->
+  <div class="vtf-section">
+    <h6 class="vtf-section-title">Voice Activity Detection</h6>
+    <div class="vtf-grid vtf-grid-2">
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="voiceActivity">0%</div>
+        <div class="vtf-metric-label">Voice Activity</div>
+      </div>
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="vadProbability">0.000</div>
+        <div class="vtf-metric-label">VAD Confidence</div>
+      </div>
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="signalNoise">0.0</div>
+        <div class="vtf-metric-label">SNR (dB)</div>
+      </div>
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="spectralCentroid">0</div>
+        <div class="vtf-metric-label">Spectral (Hz)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audio Channels -->
+  <div class="vtf-section">
+    <h6 class="vtf-section-title">Audio Channels</h6>
+    <div class="vtf-grid vtf-grid-2">
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="activeChannels">0</div>
+        <div class="vtf-metric-label">Active Channels</div>
+      </div>
+      <div class="vtf-metric">
+        <div class="vtf-metric-value" id="totalTracks">0</div>
+        <div class="vtf-metric-label">Total Tracks</div>
+      </div>
+    </div>
+    <div class="vtf-channel-list" id="channelList">
+      <div class="vtf-channel-empty">No active channels</div>
+    </div>
+  </div>
+
   <!-- Current Activity -->
   <div class="vtf-section">
     <h6 class="vtf-section-title">Current Activity</h6>
