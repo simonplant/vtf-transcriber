@@ -1,30 +1,33 @@
 // background.js - VTF Audio Transcription Extension
 // FIXED VERSION - Resolves processing delays and missing audio
 
-// Configuration - SIMPLIFIED AND PROVEN TO WORK
+// Enhanced Configuration for VTF dynamic stream switching environment
 const CONFIG = {
   SAMPLE_RATE: 16000,
-  // Adaptive chunking settings
-  CHUNK_DURATION_ACTIVE: 5,   // seconds - optimal for active trading room with multiple speakers
-  CHUNK_DURATION_IDLE: 7,    // seconds - longer chunks when only one speaker for better context
-  MIN_CHUNK_SIZE: 1,          // seconds - minimum audio length before processing
-  MAX_CHUNK_SIZE: 15,        // seconds - hard-cap per chunk to prevent oversized API calls
-  SILENCE_THRESHOLD: 0.0003, // amplitude - tuned for trading room acoustics and background noise
-  SILENCE_TIMEOUT: 2500,     // milliseconds - how long to wait before considering speech ended
-  // Speaker merging settings
-  SPEAKER_MERGE_WINDOW: 5000, // milliseconds - window for merging consecutive speech from same speaker
-  ACTIVITY_WINDOW: 5000,      // milliseconds - window for tracking recent activity levels
+  // Enhanced adaptive chunking settings for VTF feedback
+  CHUNK_DURATION_ACTIVE: 3,   // seconds - reduced for faster response in active rooms
+  CHUNK_DURATION_IDLE: 5,    // seconds - reduced for faster processing
+  MIN_CHUNK_SIZE: 0.5,        // seconds - much smaller minimum for faster response
+  MAX_CHUNK_SIZE: 12,        // seconds - reduced to prevent delays
+  SILENCE_THRESHOLD: 0.0001, // amplitude - much lower threshold based on VTF feedback
+  SILENCE_TIMEOUT: 1500,     // milliseconds - faster silence detection (1.5s)
+  // Enhanced speaker merging settings
+  SPEAKER_MERGE_WINDOW: 3000, // milliseconds - shorter window for faster switching
+  ACTIVITY_WINDOW: 3000,      // milliseconds - shorter tracking window
   ACTIVITY_THRESHOLD: 2,      // number of speakers - threshold for considering room "busy"
-  // Processing settings
-  MAX_CONCURRENT_PROCESSING: 4, // maximum simultaneous API calls to prevent rate limiting
-  // Minimum seconds to collect before sending the very first chunk for a speaker
-  STARTUP_MIN_DURATION: 2,    // seconds - initial buffer time for better speech detection
-  // Watchdog settings
-  STALL_IDLE_THRESHOLD: 3000, // milliseconds - inactivity threshold before forcing buffer flush
-  STALL_MIN_DURATION: 1,      // seconds - only flush if we have at least this much audio
+  // Enhanced processing settings for parallel processing
+  MAX_CONCURRENT_PROCESSING: 6, // increased for parallel processing as requested
+  // Reduced startup time for faster initial capture
+  STARTUP_MIN_DURATION: 1,    // seconds - faster startup for better UX
+  // Enhanced watchdog settings
+  STALL_IDLE_THRESHOLD: 1500, // milliseconds - faster buffer flush for responsiveness
+  STALL_MIN_DURATION: 0.5,    // seconds - process even very small chunks
   // Memory management
-  MAX_TRANSCRIPTIONS: 1000,   // maximum transcriptions to keep in memory (reduced to prevent memory issues)
-  TRANSCRIPTION_CLEANUP_KEEP: 500 // number of recent transcriptions to keep when cleaning up
+  MAX_TRANSCRIPTIONS: 1000,   // maximum transcriptions to keep in memory
+  TRANSCRIPTION_CLEANUP_KEEP: 500, // number of recent transcriptions to keep when cleaning up
+  // Enhanced stream switching support
+  STREAM_SWITCH_TOLERANCE: 500, // milliseconds - how quickly to detect stream switches
+  PRODUCER_TRACKING_TIMEOUT: 5000 // milliseconds - how long to track inactive producers
 };
 
 // Store audio chunks and transcriptions
