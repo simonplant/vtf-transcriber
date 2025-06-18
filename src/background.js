@@ -53,6 +53,166 @@ let lastTranscripts = new Map();
 
 const speakerAliasMap = new Map();
 
+// Conversation processing for quality transcription
+class ConversationProcessor {
+  constructor() {
+    this.speakerBuffers = new Map(); // streamId -> {chunks, lastActivity, processed}
+    this.completedSegments = [];
+    this.SPEAKER_TIMEOUT = 4000; // 4 seconds to determine speaker finished
+    this.MIN_SEGMENT_LENGTH = 8; // minimum seconds before processing
+  }
+  
+  addTranscript(transcript) {
+    const streamId = transcript.streamId;
+    const now = Date.now();
+    
+    if (!this.speakerBuffers.has(streamId)) {
+      this.speakerBuffers.set(streamId, {
+        chunks: [],
+        lastActivity: now,
+        processed: false
+      });
+    }
+    
+    const buffer = this.speakerBuffers.get(streamId);
+    buffer.chunks.push(transcript);
+    buffer.lastActivity = now;
+    
+    // Check if we should process any completed speaker segments
+    this.checkForCompletedSegments();
+  }
+  
+  checkForCompletedSegments() {
+    const now = Date.now();
+    
+    this.speakerBuffers.forEach((buffer, streamId) => {
+      const timeSinceActivity = now - buffer.lastActivity;
+      const totalDuration = buffer.chunks.reduce((sum, chunk) => sum + (chunk.duration || 2), 0);
+      
+      // Process if: speaker finished talking OR segment is long enough
+      if (!buffer.processed && (timeSinceActivity > this.SPEAKER_TIMEOUT || totalDuration > this.MIN_SEGMENT_LENGTH)) {
+        this.processSpeakerSegment(streamId, buffer);
+      }
+    });
+  }
+  
+  processSpeakerSegment(streamId, buffer) {
+    if (buffer.chunks.length === 0) return;
+    
+    buffer.processed = true;
+    
+    // Merge all chunks from this speaker
+    const mergedText = this.mergeChunks(buffer.chunks);
+    const cleanedText = this.cleanText(mergedText);
+    const topicTitle = this.detectTopic(cleanedText);
+    
+    const processedSegment = {
+      speaker: buffer.chunks[0].speaker || this.extractSpeakerName(streamId),
+      text: cleanedText,
+      topic: topicTitle,
+      startTime: buffer.chunks[0].timestamp,
+      endTime: buffer.chunks[buffer.chunks.length - 1].timestamp,
+      duration: buffer.chunks.reduce((sum, chunk) => sum + (chunk.duration || 2), 0),
+      confidence: this.calculateAverageConfidence(buffer.chunks),
+      streamId: streamId
+    };
+    
+    this.completedSegments.push(processedSegment);
+    
+    // Send processed segment to content script
+    chrome.tabs.query({}, tabs => {
+      tabs.forEach(tab => {
+        if (tab.url && tab.url.includes('vtf.t3live.com')) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: 'processedTranscription',
+            segment: processedSegment
+          }, response => {
+            if (chrome.runtime.lastError) {
+              // Silent fail if content script not ready
+            }
+          });
+        }
+      });
+    });
+  }
+  
+  mergeChunks(chunks) {
+    let merged = chunks.map(chunk => chunk.text).join(' ');
+    
+    // Fix sentence fragments
+    merged = merged.replace(/\s+/g, ' '); // normalize spaces
+    merged = merged.replace(/\.\s*([a-z])/g, '. $1'); // fix sentence boundaries
+    merged = merged.replace(/([a-z])\s+([A-Z])/g, '$1. $2'); // add missing periods
+    
+    return merged.trim();
+  }
+  
+  cleanText(text) {
+    // Remove speech artifacts
+    text = text.replace(/\b(um|uh|you know|like|actually)\b/gi, '');
+    text = text.replace(/\bgonna\b/gi, 'going to');
+    text = text.replace(/\bcause\b/gi, 'because');
+    text = text.replace(/\bwanna\b/gi, 'want to');
+    
+    // Fix contractions
+    text = text.replace(/\bis\s+not\b/gi, "isn't");
+    text = text.replace(/\bdo\s+not\b/gi, "don't");
+    text = text.replace(/\bdoes\s+not\b/gi, "doesn't");
+    
+    // Remove repetitions (same word twice in a row)
+    text = text.replace(/\b(\w+)\s+\1\b/gi, '$1');
+    
+    // Clean up spacing and punctuation
+    text = text.replace(/\s+/g, ' ');
+    text = text.replace(/\s+([,.!?])/g, '$1');
+    text = text.replace(/([,.!?])\s*([a-z])/g, '$1 $2');
+    
+    return text.trim();
+  }
+  
+  detectTopic(text) {
+    const topics = [
+      { keywords: ['market', 'futures', 'dow', 'nasdaq', 'spy'], title: 'Market Update' },
+      { keywords: ['price target', 'upgrade', 'downgrade', 'analyst', 'buy', 'sell'], title: 'Analyst Updates' },
+      { keywords: ['trade', 'position', 'buy', 'sell', 'profit', 'loss'], title: 'Trade Discussion' },
+      { keywords: ['chart', 'technical', 'support', 'resistance', 'fibonacci'], title: 'Technical Analysis' },
+      { keywords: ['earnings', 'revenue', 'guidance', 'report'], title: 'Earnings Analysis' },
+      { keywords: ['fed', 'fomc', 'powell', 'rates', 'inflation'], title: 'Fed Watch' }
+    ];
+    
+    const textLower = text.toLowerCase();
+    
+    for (const topic of topics) {
+      const matches = topic.keywords.filter(keyword => textLower.includes(keyword));
+      if (matches.length >= 2) {
+        return topic.title;
+      }
+    }
+    
+    return 'Market Commentary';
+  }
+  
+  calculateAverageConfidence(chunks) {
+    const confidences = chunks.filter(c => c.confidence).map(c => c.confidence);
+    if (confidences.length === 0) return 0;
+    return confidences.reduce((sum, conf) => sum + conf, 0) / confidences.length;
+  }
+  
+  getCompletedSegments() {
+    return this.completedSegments;
+  }
+  
+  clearOldSegments() {
+    // Keep only recent segments to manage memory
+    if (this.completedSegments.length > 100) {
+      this.completedSegments = this.completedSegments.slice(-50);
+    }
+  }
+}
+
+// Create global conversation processor
+const conversationProcessor = new ConversationProcessor();
+
 // Rate limiting for OpenAI API
 const rateLimiter = {
   requests: [],
@@ -471,23 +631,8 @@ async function processSpeakerBuffer(streamId, reason) {
         speakerData.pendingTranscripts = [result];
       }
       
-      // Send transcription to content script
-      chrome.tabs.query({}, tabs => {
-        tabs.forEach(tab => {
-          if (tab.url && tab.url.includes('vtf.t3live.com')) {
-            chrome.tabs.sendMessage(tab.id, {
-              type: 'newTranscription',
-              transcription: result,
-              merged: shouldMerge
-            }, response => {
-              // Handle response or error silently
-              if (chrome.runtime.lastError) {
-                console.log('[VTF Background] Content script not ready:', chrome.runtime.lastError.message);
-              }
-            });
-          }
-        });
-      });
+      // Feed to conversation processor instead of immediate display
+      conversationProcessor.addTranscript(result);
     }
     
   } catch (error) {

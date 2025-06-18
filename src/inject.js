@@ -98,7 +98,7 @@
         processor.port.postMessage({
           type: 'configure',
           chunkSize: 16000, // 1 second at 16kHz
-          silenceThreshold: 0.01
+          silenceThreshold: 0.001
         });
         
         // Listen for audio data from the worklet
@@ -162,7 +162,7 @@
               maxSample: qualityInfo.maxSample,
               audioQuality: qualityInfo.quality,
               rms: qualityInfo.rms,
-              isSilent: qualityInfo.rms < 0.01 // Simple silence detection for fallback
+              isSilent: qualityInfo.rms < 0.001 // Simple silence detection for fallback
             }, '*');
           }
         }, 'audio processing');

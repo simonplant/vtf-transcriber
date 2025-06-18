@@ -5,7 +5,7 @@ class VTFAudioProcessor extends AudioWorkletProcessor {
     super();
     this.audioBuffer = [];
     this.chunkSize = 16000; // 1 second at 16kHz
-    this.silenceThreshold = 0.01; // RMS threshold for silence detection
+    this.silenceThreshold = 0.001; // RMS threshold for silence detection
     this.consecutiveSilentChunks = 0;
     this.maxSilentChunks = 3; // 3 seconds of silence before pausing
     
@@ -13,7 +13,7 @@ class VTFAudioProcessor extends AudioWorkletProcessor {
     this.port.onmessage = (event) => {
       if (event.data.type === 'configure') {
         this.chunkSize = event.data.chunkSize || 16000;
-        this.silenceThreshold = event.data.silenceThreshold || 0.01;
+        this.silenceThreshold = event.data.silenceThreshold || 0.001;
       }
     };
   }
