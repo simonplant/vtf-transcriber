@@ -37,7 +37,7 @@
   "options_page": "options.html",
   
   "web_accessible_resources": [{
-    "resources": ["inject.js"],
+    "resources": ["inject.js", "vtf-audio-processor.js"],
     "matches": ["*://vtf.t3live.com/*"]
   }],
   

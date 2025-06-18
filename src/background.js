@@ -23,8 +23,8 @@ const CONFIG = {
   STALL_IDLE_THRESHOLD: 3000, // milliseconds - inactivity threshold before forcing buffer flush
   STALL_MIN_DURATION: 1,      // seconds - only flush if we have at least this much audio
   // Memory management
-  MAX_TRANSCRIPTIONS: 10000,   // maximum transcriptions to keep in memory for very long sessions
-  TRANSCRIPTION_CLEANUP_KEEP: 8000 // number of recent transcriptions to keep when cleaning up
+  MAX_TRANSCRIPTIONS: 1000,   // maximum transcriptions to keep in memory (reduced to prevent memory issues)
+  TRANSCRIPTION_CLEANUP_KEEP: 500 // number of recent transcriptions to keep when cleaning up
 };
 
 // Store audio chunks and transcriptions
@@ -52,6 +52,43 @@ let processingQueue = new Set();
 let lastTranscripts = new Map();  
 
 const speakerAliasMap = new Map();
+
+// Rate limiting for OpenAI API
+const rateLimiter = {
+  requests: [],
+  maxPerMinute: 50, // OpenAI API limit
+  maxConcurrent: 3, // Limit concurrent requests
+  currentRequests: 0,
+  
+  canMakeRequest() {
+    const now = Date.now();
+    // Clean old requests (older than 1 minute)
+    this.requests = this.requests.filter(time => now - time < 60000);
+    
+    // Check rate limits
+    const withinRateLimit = this.requests.length < this.maxPerMinute;
+    const withinConcurrentLimit = this.currentRequests < this.maxConcurrent;
+    
+    return withinRateLimit && withinConcurrentLimit;
+  },
+  
+  addRequest() {
+    this.requests.push(Date.now());
+    this.currentRequests++;
+  },
+  
+  completeRequest() {
+    this.currentRequests = Math.max(0, this.currentRequests - 1);
+  },
+  
+  getWaitTime() {
+    if (this.requests.length >= this.maxPerMinute) {
+      const oldestRequest = Math.min(...this.requests);
+      return Math.max(0, 60000 - (Date.now() - oldestRequest));
+    }
+    return 0;
+  }
+};
 
 // Simple log helper – switch between 'debug', 'info', 'silent'
 const LOG = { level: 'info' };
@@ -190,6 +227,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const targetDate = request.date ? new Date(request.date) : new Date();
       const markdown = generateDailyMarkdown(targetDate);
       sendResponse({ markdown, date: targetDate.toISOString().split('T')[0] });
+      return true;
+    }
+    
+    if (request.type === 'exportSessionData') {
+      const sessionData = {
+        transcriptions: transcriptions,
+        timestamp: Date.now(),
+        version: '0.6.0',
+        speakers: Array.from(speakerAliasMap.entries()),
+        performance: performanceMetrics
+      };
+      sendResponse({ sessionData });
+      return true;
+    }
+    
+    if (request.type === 'importSessionData') {
+      try {
+        const data = request.sessionData;
+        if (data && data.transcriptions) {
+          transcriptions = data.transcriptions;
+          if (data.speakers) {
+            speakerAliasMap.clear();
+            data.speakers.forEach(([key, value]) => {
+              speakerAliasMap.set(key, value);
+            });
+          }
+          console.log(`[VTF Background] Imported ${transcriptions.length} transcriptions`);
+          sendResponse({ success: true, count: transcriptions.length });
+        } else {
+          sendResponse({ success: false, error: 'Invalid data format' });
+        }
+      } catch (error) {
+        console.error('[VTF Background] Import error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
       return true;
     }
     
@@ -391,11 +463,7 @@ async function processSpeakerBuffer(streamId, reason) {
       
       if (shouldMerge) {
         mergeTranscript(streamId, result);
-        // Update the merged transcript with conversation metadata
-        const lastTranscript = transcriptions[transcriptions.length - 1];
-        if (lastTranscript) {
-          updateConversationMetadata(lastTranscript);
-        }
+
       } else {
         // Store transcriptions with conversation assembly
         assembleConversation(result);
@@ -627,6 +695,25 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
 // Process audio chunk with Whisper API
 async function processAudioChunk(audioData, timestamp, streamId) {
   const startTime = Date.now();
+  
+  // Check rate limiting before proceeding
+  if (!rateLimiter.canMakeRequest()) {
+    const waitTime = rateLimiter.getWaitTime();
+    console.log(`[VTF Background] Rate limit reached, waiting ${waitTime}ms for ${streamId}`);
+    
+    if (waitTime > 0) {
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    // Check again after waiting
+    if (!rateLimiter.canMakeRequest()) {
+      console.warn(`[VTF Background] Still rate limited, skipping chunk for ${streamId}`);
+      return null;
+    }
+  }
+  
+  // Add to rate limiter tracking
+  rateLimiter.addRequest();
   performanceMetrics.apiCalls++;
   
   if (!apiKey) {
@@ -640,6 +727,7 @@ async function processAudioChunk(audioData, timestamp, streamId) {
       console.error('[VTF Background] No API key in local storage');
       performanceMetrics.errorCount++;
       updatePerformanceMetrics();
+      rateLimiter.completeRequest(); // Complete the tracking
       return null;
     }
   }
@@ -654,7 +742,7 @@ async function processAudioChunk(audioData, timestamp, streamId) {
     formData.append('file', wavBlob, 'audio.wav');
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
-    formData.append('response_format', 'json');
+    formData.append('response_format', 'verbose_json'); // Get timestamps and confidence scores
     
     console.log('[VTF Background] Sending to Whisper API...');
     
@@ -677,27 +765,42 @@ async function processAudioChunk(audioData, timestamp, streamId) {
     console.log('[VTF Background] Whisper API result:', result);
     
     if (result.text && result.text.trim()) {
+      // Calculate average confidence if segments are available
+      let avgConfidence = 0;
+      if (result.segments && result.segments.length > 0) {
+        const confidenceSum = result.segments.reduce((sum, segment) => {
+          return sum + (segment.avg_logprob ? Math.exp(segment.avg_logprob) : 0.5);
+        }, 0);
+        avgConfidence = confidenceSum / result.segments.length;
+      }
+      
       const transcription = {
         text: result.text,
         timestamp: timestamp,
-        duration: audioData.length / 16000, // Calculate duration from samples
-        streamId: streamId
+        duration: result.duration || (audioData.length / 16000), // Use API duration if available
+        streamId: streamId,
+        confidence: avgConfidence,
+        language: result.language || 'en',
+        segments: result.segments || []
       };
       
       // Track successful response time
       const responseTime = Date.now() - startTime;
       performanceMetrics.totalResponseTime += responseTime;
       updatePerformanceMetrics();
+      rateLimiter.completeRequest(); // Complete the rate limiting tracking
       
       return transcription;
     } else {
       console.log('[VTF Background] No text in transcription result');
+      rateLimiter.completeRequest(); // Complete the rate limiting tracking
     }
     
     return null;
   } catch (error) {
     performanceMetrics.errorCount++;
     updatePerformanceMetrics();
+    rateLimiter.completeRequest(); // Complete the rate limiting tracking
     console.error('[VTF Background] Whisper API error:', error.message);
     console.error('[VTF Background] Full error:', error);
     throw error;
@@ -706,9 +809,6 @@ async function processAudioChunk(audioData, timestamp, streamId) {
 
 // Conversation assembly and post-processing
 function assembleConversation(newTranscription) {
-  const CONVERSATION_GAP_MS = 10000; // 10 seconds gap = new conversation
-  const SOLILOQUY_MIN_DURATION = 15000; // 15 seconds = soliloquy
-  
   // Add to transcriptions without purging
   transcriptions.push(newTranscription);
   
@@ -719,69 +819,10 @@ function assembleConversation(newTranscription) {
     console.log(`[VTF Background] Memory cleanup: removed ${removed} old transcriptions, keeping ${transcriptions.length}`);
   }
   
-  // Analyze recent conversation flow
-  const recentTranscripts = transcriptions.slice(-20); // Last 20 for context
-  const conversations = groupIntoConversations(recentTranscripts);
-  
-  // Mark conversation types
-  markConversationTypes(conversations);
-  
   return newTranscription;
 }
 
-function groupIntoConversations(transcripts) {
-  const conversations = [];
-  let currentConversation = [];
-  
-  for (let i = 0; i < transcripts.length; i++) {
-    const transcript = transcripts[i];
-    const prevTranscript = i > 0 ? transcripts[i - 1] : null;
-    
-    // Start new conversation if gap > 10s or different day
-    if (prevTranscript) {
-      const timeDiff = transcript.timestamp - prevTranscript.timestamp;
-      const dayDiff = new Date(transcript.timestamp).getDate() !== new Date(prevTranscript.timestamp).getDate();
-      
-      if (timeDiff > 10000 || dayDiff) {
-        if (currentConversation.length > 0) {
-          conversations.push([...currentConversation]);
-          currentConversation = [];
-        }
-      }
-    }
-    
-    currentConversation.push(transcript);
-  }
-  
-  if (currentConversation.length > 0) {
-    conversations.push(currentConversation);
-  }
-  
-  return conversations;
-}
 
-function markConversationTypes(conversations) {
-  conversations.forEach(conversation => {
-    if (conversation.length === 0) return;
-    
-    const speakers = [...new Set(conversation.map(t => t.speaker))];
-    const duration = conversation[conversation.length - 1].timestamp - conversation[0].timestamp;
-    
-    let type = 'exchange';
-    if (speakers.length === 1 && duration > 15000) {
-      type = 'soliloquy';
-    } else if (speakers.length > 2) {
-      type = 'group_discussion';
-    }
-    
-    // Add metadata to each transcript in conversation
-    conversation.forEach(t => {
-      t.conversationType = type;
-      t.conversationSpeakers = speakers;
-      t.conversationDuration = duration;
-    });
-  });
-}
 
 // Generate daily markdown export
 function generateDailyMarkdown(targetDate = null) {
@@ -798,10 +839,6 @@ function generateDailyMarkdown(targetDate = null) {
     return `# VTF Trading Room - ${dateStr}\n\n*No transcriptions recorded for this date.*`;
   }
   
-  // Group into conversations
-  const conversations = groupIntoConversations(dayTranscripts);
-  markConversationTypes(conversations);
-  
   let markdown = `# VTF Trading Room - ${date.toLocaleDateString('en-US', { 
     weekday: 'long', 
     year: 'numeric', 
@@ -810,63 +847,24 @@ function generateDailyMarkdown(targetDate = null) {
   })}\n\n`;
   
   markdown += `**Session Summary:**\n`;
-  markdown += `- Total Conversations: ${conversations.length}\n`;
   markdown += `- Total Transcripts: ${dayTranscripts.length}\n`;
   markdown += `- Session Duration: ${formatDuration(dayTranscripts[dayTranscripts.length - 1].timestamp - dayTranscripts[0].timestamp)}\n`;
   markdown += `- Speakers: ${[...new Set(dayTranscripts.map(t => t.speaker))].join(', ')}\n\n`;
   
   markdown += `---\n\n`;
   
-  // Process each conversation
-  conversations.forEach((conversation, index) => {
-    const startTime = new Date(conversation[0].timestamp);
-    const endTime = new Date(conversation[conversation.length - 1].timestamp);
-    const type = conversation[0].conversationType;
-    const speakers = conversation[0].conversationSpeakers;
+  // Process transcripts chronologically
+  dayTranscripts.forEach(transcript => {
+    const time = new Date(transcript.timestamp).toLocaleTimeString();
+    const duration = transcript.duration ? ` *(${transcript.duration.toFixed(1)}s)*` : '';
     
-    // Conversation header
-    markdown += `## ${getConversationTitle(type, speakers)} - ${startTime.toLocaleTimeString()}\n\n`;
-    
-    if (type === 'soliloquy') {
-      markdown += `*${speakers[0]} speaking for ${formatDuration(endTime - startTime)}*\n\n`;
-    } else {
-      markdown += `*${speakers.join(' & ')} - ${formatDuration(endTime - startTime)}*\n\n`;
-    }
-    
-    // Process transcripts in conversation
-    conversation.forEach(transcript => {
-      const time = new Date(transcript.timestamp).toLocaleTimeString();
-      const duration = transcript.duration ? ` *(${transcript.duration.toFixed(1)}s)*` : '';
-      
-      if (type === 'soliloquy') {
-        // For soliloquies, just show the text without repeated speaker names
-        markdown += `${transcript.text} `;
-      } else {
-        // For conversations, show speaker names
-        markdown += `**${transcript.speaker}** *(${time})*${duration}: ${transcript.text}\n\n`;
-      }
-    });
-    
-    if (type === 'soliloquy') {
-      markdown += `\n\n`;
-    }
-    
-    markdown += `---\n\n`;
+    markdown += `**${transcript.speaker}** *(${time})*${duration}: ${transcript.text}\n\n`;
   });
   
   return markdown;
 }
 
-function getConversationTitle(type, speakers) {
-  switch (type) {
-    case 'soliloquy':
-      return `${speakers[0]}'s Analysis`;
-    case 'group_discussion':
-      return `Group Discussion`;
-    default:
-      return `${speakers.join(' & ')} Exchange`;
-  }
-}
+
 
 function formatDuration(ms) {
   const seconds = Math.floor(ms / 1000);
@@ -978,12 +976,7 @@ setInterval(() => {
 // Log when service worker starts
 console.log('[VTF Background] Service worker started at', new Date().toISOString());
 
-function updateConversationMetadata(transcript) {
-  // Quick analysis for single transcript
-  const recentTranscripts = transcriptions.slice(-10);
-  const conversations = groupIntoConversations(recentTranscripts);
-  markConversationTypes(conversations);
-}
+
 
 function updatePerformanceMetrics() {
   performanceMetrics.avgResponseTime = performanceMetrics.totalResponseTime / performanceMetrics.apiCalls;

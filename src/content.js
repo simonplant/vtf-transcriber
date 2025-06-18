@@ -77,6 +77,14 @@ function handleAudioMessage(event) {
     }
     
     // Check if extension context is still valid
+    // Skip silent chunks to reduce API calls
+    if (event.data.isSilent && event.data.audioQuality === 'poor') {
+      if (DEBUG_CAPTURE) {
+        console.debug(`[Content] Skipping silent chunk from ${event.data.streamId}`);
+      }
+      return;
+    }
+    
     try {
       // Send to background script
       chrome.runtime.sendMessage({
@@ -84,7 +92,9 @@ function handleAudioMessage(event) {
         audioData: event.data.audioData,
         timestamp: event.data.timestamp,
         streamId: event.data.streamId,
-        chunkNumber: chunksSent
+        chunkNumber: chunksSent,
+        isSilent: event.data.isSilent,
+        audioQuality: event.data.audioQuality
       }, response => {
         if (chrome.runtime.lastError) {
           const msg = chrome.runtime.lastError.message || '';
@@ -263,7 +273,11 @@ function createTranscriptionDisplay() {
     display: none;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
     border: 1px solid rgba(255, 255, 255, 0.1);
+    cursor: move;
   `;
+  
+  // Make the display draggable
+  makeDraggable(display);
   
   // Header with status indicators
   const header = document.createElement('div');
@@ -317,9 +331,56 @@ function createTranscriptionDisplay() {
         cursor: pointer;
         font-weight: 500;
       ">Daily MD</button>
+      <button id="vtf-backup-btn" style="
+        background: rgba(156, 39, 176, 0.2);
+        border: 1px solid rgba(156, 39, 176, 0.4);
+        color: #9C27B0;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 10px;
+        cursor: pointer;
+        font-weight: 500;
+      ">Backup</button>
+      <button id="vtf-restore-btn" style="
+        background: rgba(255, 152, 0, 0.2);
+        border: 1px solid rgba(255, 152, 0, 0.4);
+        color: #FF9800;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 10px;
+        cursor: pointer;
+        font-weight: 500;
+      ">Restore</button>
     </div>
   `;
+  
+  // Add search functionality
+  const searchBar = document.createElement('div');
+  searchBar.style.cssText = `
+    padding: 8px 15px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.02);
+  `;
+  searchBar.innerHTML = `
+    <input type="text" id="vtf-search-input" placeholder="Search transcripts..." style="
+      width: 100%;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+      padding: 6px 10px;
+      color: white;
+      font-size: 12px;
+      outline: none;
+    ">
+  `;
   display.appendChild(header);
+  display.appendChild(searchBar);
+  
+  // Add search functionality
+  const searchInput = searchBar.querySelector('#vtf-search-input');
+  searchInput.addEventListener('input', (e) => {
+    filterTranscripts(e.target.value);
+  });
   
   // Speaker buffers visualization
   const bufferViz = document.createElement('div');
@@ -393,34 +454,6 @@ function createTranscriptionDisplay() {
       animation: fadeIn 0.3s ease;
     }
     
-    .vtf-transcript-entry.soliloquy {
-      border-left-color: #FF9800;
-      background: rgba(255, 152, 0, 0.05);
-    }
-    
-    .vtf-transcript-entry.group_discussion {
-      border-left-color: #9C27B0;
-      background: rgba(156, 39, 176, 0.05);
-    }
-    
-    .vtf-conversation-type {
-      font-size: 9px;
-      padding: 1px 4px;
-      border-radius: 2px;
-      margin-left: 4px;
-      font-weight: 500;
-    }
-    
-    .vtf-conversation-type.soliloquy {
-      background: rgba(255, 152, 0, 0.2);
-      color: #FF9800;
-    }
-    
-    .vtf-conversation-type.group_discussion {
-      background: rgba(156, 39, 176, 0.2);
-      color: #9C27B0;
-    }
-    
     @keyframes fadeIn {
       from { 
         opacity: 0;
@@ -443,6 +476,22 @@ function createTranscriptionDisplay() {
   const dailyExportBtn = document.getElementById('vtf-daily-export-btn');
   if (dailyExportBtn) {
     dailyExportBtn.onclick = exportDailyMarkdown;
+  }
+  
+  const backupBtn = document.getElementById('vtf-backup-btn');
+  if (backupBtn) {
+    backupBtn.onclick = exportSessionBackup;
+  }
+  
+  const restoreBtn = document.getElementById('vtf-restore-btn');
+  if (restoreBtn) {
+    restoreBtn.onclick = () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.onchange = importSessionBackup;
+      input.click();
+    };
   }
   
   document.body.appendChild(display);
@@ -500,18 +549,15 @@ function displayTranscription(transcription, merged = false) {
       const time = new Date(transcription.timestamp).toLocaleTimeString();
       const duration = transcription.duration ? `(${transcription.duration.toFixed(1)}s)` : '';
       
-      // Add conversation type styling
-      const conversationType = transcription.conversationType || 'exchange';
-      entry.classList.add(conversationType);
-      
-      const typeLabel = getConversationTypeLabel(conversationType);
+      // Format confidence score
+      const confidenceDisplay = transcription.confidence ? 
+        `<span style="color: ${transcription.confidence > 0.8 ? '#4CAF50' : transcription.confidence > 0.6 ? '#FF9800' : '#F44336'}; font-size: 10px; margin-left: 4px;">${Math.round(transcription.confidence * 100)}%</span>` : '';
       
       entry.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
           <span style="color: #888; font-size: 11px;">${time}</span>
           <div style="display: flex; align-items: center;">
-            <span style="color: #4CAF50; font-size: 11px; font-weight: 500;">${speakerName} ${duration}</span>
-            ${typeLabel ? `<span class="vtf-conversation-type ${conversationType}">${typeLabel}</span>` : ''}
+            <span style="color: #4CAF50; font-size: 11px; font-weight: 500;">${speakerName} ${duration}${confidenceDisplay}</span>
           </div>
         </div>
         <div class="vtf-transcript-text" style="color: #fff; line-height: 1.4;">${transcription.text}</div>
@@ -672,6 +718,125 @@ window.addEventListener('load', () => {
 
 console.log('VTF Audio Extension: Ready and listening for audio...');
 
+// Filter transcripts by search term
+function filterTranscripts(searchTerm) {
+  const content = document.getElementById('vtf-transcription-content');
+  if (!content) return;
+  
+  const entries = content.querySelectorAll('.vtf-transcript-entry');
+  const term = searchTerm.toLowerCase().trim();
+  
+  entries.forEach(entry => {
+    if (!term) {
+      entry.style.display = '';
+      entry.classList.remove('vtf-search-highlight');
+    } else {
+      const text = entry.textContent.toLowerCase();
+      const shouldShow = text.includes(term);
+      
+      entry.style.display = shouldShow ? '' : 'none';
+      
+      if (shouldShow) {
+        // Highlight matching text
+        const textElement = entry.querySelector('.vtf-transcript-text');
+        if (textElement) {
+          const originalText = textElement.dataset.originalText || textElement.textContent;
+          textElement.dataset.originalText = originalText;
+          
+          if (term) {
+            const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+            const highlightedText = originalText.replace(regex, '<mark style="background: rgba(255, 255, 0, 0.3); color: white;">$1</mark>');
+            textElement.innerHTML = highlightedText;
+          } else {
+            textElement.textContent = originalText;
+          }
+        }
+      }
+    }
+  });
+  
+  // Update search result count
+  const visibleCount = Array.from(entries).filter(entry => entry.style.display !== 'none').length;
+  const searchInput = document.getElementById('vtf-search-input');
+  if (searchInput && term) {
+    searchInput.style.borderColor = visibleCount > 0 ? 'rgba(76, 175, 80, 0.5)' : 'rgba(255, 152, 0, 0.5)';
+    searchInput.title = `${visibleCount} matches found`;
+  } else if (searchInput) {
+    searchInput.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+    searchInput.title = '';
+  }
+}
+
+// Make element draggable
+function makeDraggable(element) {
+  let isDragging = false;
+  let dragOffset = { x: 0, y: 0 };
+  
+  // Only make header draggable, not the whole element
+  const header = element.querySelector('.vtf-header') || element.firstElementChild;
+  if (!header) return;
+  
+  header.style.cursor = 'move';
+  
+  header.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    const rect = element.getBoundingClientRect();
+    dragOffset.x = e.clientX - rect.left;
+    dragOffset.y = e.clientY - rect.top;
+    
+    // Prevent text selection during drag
+    e.preventDefault();
+    document.body.style.userSelect = 'none';
+  });
+  
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    
+    const x = e.clientX - dragOffset.x;
+    const y = e.clientY - dragOffset.y;
+    
+    // Keep within viewport bounds
+    const maxX = window.innerWidth - element.offsetWidth;
+    const maxY = window.innerHeight - element.offsetHeight;
+    
+    const boundedX = Math.max(0, Math.min(x, maxX));
+    const boundedY = Math.max(0, Math.min(y, maxY));
+    
+    element.style.left = boundedX + 'px';
+    element.style.top = boundedY + 'px';
+    element.style.bottom = 'auto';
+    element.style.right = 'auto';
+  });
+  
+  document.addEventListener('mouseup', () => {
+    if (isDragging) {
+      isDragging = false;
+      document.body.style.userSelect = '';
+      
+      // Save position to localStorage
+      const rect = element.getBoundingClientRect();
+      localStorage.setItem('vtf-display-position', JSON.stringify({
+        x: rect.left,
+        y: rect.top
+      }));
+    }
+  });
+  
+  // Restore saved position
+  try {
+    const saved = localStorage.getItem('vtf-display-position');
+    if (saved) {
+      const position = JSON.parse(saved);
+      element.style.left = position.x + 'px';
+      element.style.top = position.y + 'px';
+      element.style.bottom = 'auto';
+      element.style.right = 'auto';
+    }
+  } catch (e) {
+    // Ignore errors with localStorage
+  }
+}
+
 // Export transcripts to text file
 function exportTranscripts() {
   chrome.runtime.sendMessage({type: 'getTranscriptions'}, (response) => {
@@ -709,12 +874,118 @@ function exportTranscripts() {
   });
 }
 
-function getConversationTypeLabel(type) {
-  switch (type) {
-    case 'soliloquy': return 'SOLO';
-    case 'group_discussion': return 'GROUP';
-    default: return '';
-  }
+
+
+// Export session backup
+function exportSessionBackup() {
+  chrome.runtime.sendMessage({type: 'exportSessionData'}, (response) => {
+    if (chrome.runtime.lastError || !response || !response.sessionData) {
+      console.error('[Content] Failed to get session data for backup');
+      alert('Failed to create backup');
+      return;
+    }
+    
+    const sessionData = response.sessionData;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    
+    // Create and download file
+    const blob = new Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vtf-session-backup-${timestamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    console.log(`[Content] Session backup created with ${sessionData.transcriptions.length} transcriptions`);
+    
+    // Show success notification
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: rgba(156, 39, 176, 0.9);
+      color: white;
+      padding: 12px 20px;
+      border-radius: 6px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 14px;
+      z-index: 10001;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    `;
+    notification.textContent = `Session backup created (${sessionData.transcriptions.length} transcripts)`;
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.parentNode.removeChild(notification);
+      }
+    }, 3000);
+  });
+}
+
+// Import session backup
+function importSessionBackup(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const sessionData = JSON.parse(e.target.result);
+      
+      chrome.runtime.sendMessage({
+        type: 'importSessionData',
+        sessionData: sessionData
+      }, (response) => {
+        if (chrome.runtime.lastError || !response) {
+          console.error('[Content] Failed to import session data');
+          alert('Failed to import session data');
+          return;
+        }
+        
+        if (response.success) {
+          console.log(`[Content] Successfully imported ${response.count} transcriptions`);
+          
+          // Show success notification
+          const notification = document.createElement('div');
+          notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(76, 175, 80, 0.9);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 6px;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 14px;
+            z-index: 10001;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+          `;
+          notification.textContent = `Imported ${response.count} transcriptions`;
+          document.body.appendChild(notification);
+          
+          setTimeout(() => {
+            if (notification.parentNode) {
+              notification.parentNode.removeChild(notification);
+            }
+          }, 3000);
+          
+          // Refresh the display
+          window.location.reload();
+        } else {
+          alert(`Import failed: ${response.error}`);
+        }
+      });
+    } catch (error) {
+      console.error('[Content] Error parsing backup file:', error);
+      alert('Invalid backup file format');
+    }
+  };
+  reader.readAsText(file);
 }
 
 // Export daily markdown
