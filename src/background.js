@@ -2,16 +2,9 @@
  * @file background.js
  * @path src/background.js
  * @description Service worker handling audio processing, OpenAI Whisper API integration, and real-time transcription
- * @modified 2025-01-27
+ * @modified 2025-06-18
  */
 
-// QA FIXES IMPLEMENTED:
-// ✅ Fixed memory management in processedChunks (proper cleanup)
-// ✅ Enhanced chunk ID generation (counter + streamId + timestamp)  
-// ✅ Added rate limiting queue management for API requests
-// ✅ Improved speaker merge window (reduced from 5s to 2s)
-// ✅ Added cleanup on capture restart
-// ✅ Enhanced error handling and resource management
 
 // Debug configuration - set to false to reduce logging
 const DEBUG = false;

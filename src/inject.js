@@ -2,7 +2,7 @@
  * @file inject.js
  * @path src/inject.js
  * @description Direct audio stream capture from VTF platform with enhanced Voice Activity Detection
- * @modified 2025-01-27
+ * @modified 2025-06-18
  */
 
 // QA FIXES IMPLEMENTED:

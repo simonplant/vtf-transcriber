@@ -2,7 +2,7 @@
  * @file popup.js
  * @path src/popup.js
  * @description Dashboard interface for real-time monitoring and control of VTF audio transcription
- * @modified 2025-01-27
+ * @modified 2025-06-18
  */
 
 // popup.js - VTF Capture Dashboard

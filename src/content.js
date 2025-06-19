@@ -2,7 +2,7 @@
  * @file content.js
  * @path src/content.js
  * @description VTF platform integration script handling message routing and transcription display
- * @modified 2025-01-27
+ * @modified 2025-06-18
  */
 
 // content.js - VTF Audio Extension with enhanced debugging and visual feedback

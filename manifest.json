@@ -2,7 +2,7 @@
   "_comment": "@file manifest.json | @path manifest.json | @description Chrome extension manifest defining permissions, scripts, and metadata | @modified 2025-01-27",
   "manifest_version": 3,
   "name": "VTF Audio Transcriber",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "description": "Capture and transcribe audio from Virtual Trading Floor",
   
   "content_scripts": [{

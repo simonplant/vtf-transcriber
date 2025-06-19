@@ -2,7 +2,7 @@
   @file README.md
   @path README.md
   @description Main documentation for VTF Audio Transcriber Chrome Extension
-  @modified 2025-01-27
+  @modified 2025-06-18
 -->
 
 # VTF Audio Transcriber
