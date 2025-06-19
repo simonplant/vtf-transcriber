@@ -1,4 +1,7 @@
-# VTF Audio Transcriber Chrome Extension Makefile
+# @file Makefile
+# @path Makefile  
+# @description Build system for VTF Audio Transcriber Chrome Extension with development workflow
+# @modified 2025-01-27
 #
 # A streamlined Makefile for modern Chrome Extension development.
 # This file focuses on a simple, efficient build-and-reload workflow.

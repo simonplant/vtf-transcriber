@@ -1,3 +1,10 @@
+<!--
+  @file README.md
+  @path README.md
+  @description Main documentation for VTF Audio Transcriber Chrome Extension
+  @modified 2025-01-27
+-->
+
 # VTF Audio Transcriber
 
 A sophisticated Chrome extension designed for Virtual Trading Floor (VTF) environments that provides real-time audio transcription, intelligent conversation analysis, and comprehensive session documentation.

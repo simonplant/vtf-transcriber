@@ -1,5 +1,10 @@
-// src/inject.js - Enhanced audio capture with stream switching support for VTF
-//
+/**
+ * @file inject.js
+ * @path src/inject.js
+ * @description Direct audio stream capture from VTF platform with enhanced Voice Activity Detection
+ * @modified 2025-01-27
+ */
+
 // QA FIXES IMPLEMENTED:
 // ✅ Added proper AudioContext cleanup on page unload
 // ✅ Optimized array operations (removed spread operator)

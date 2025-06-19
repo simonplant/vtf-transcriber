@@ -1,3 +1,10 @@
+/**
+ * @file options.js
+ * @path src/options.js
+ * @description Configuration management for API keys, session backup/restore, and extension settings
+ * @modified 2025-01-27
+ */
+
 // options.js - Fixed for your original HTML
 
 document.addEventListener('DOMContentLoaded', () => {
