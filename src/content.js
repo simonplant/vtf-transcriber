@@ -192,23 +192,147 @@ function showReloadNotification() {
   document.body.appendChild(notification);
 }
 
-// Check if runtime is available
+// Auto-recovery system - Better error recovery without manual refresh
+function attemptAutoRecovery() {
+  console.log('[Content] Attempting auto-recovery...');
+  
+  // First, try to check if extension is actually invalid
+  setTimeout(() => {
+    if (isExtensionValid()) {
+      console.log('[Content] Extension recovered automatically');
+      showNotification('Connection restored automatically', 'success');
+      
+      // Try to reinitialize capture if needed
+      reinitializeCapture();
+    } else {
+      console.log('[Content] Extension still invalid, showing refresh notification');
+      showRefreshNotification();
+    }
+  }, 1000);
+}
+
+function reinitializeCapture() {
+  console.log('[Content] Reinitializing capture system...');
+  
+  try {
+    // Clear any existing state
+    processedSegments = [];
+    
+    // Reinject the script if needed
+    const existingScript = document.querySelector('script[src*="inject.js"]');
+    if (!existingScript) {
+      console.log('[Content] Reinjecting main script...');
+      const script = document.createElement('script');
+      script.src = chrome.runtime.getURL('inject.js');
+      script.onload = function() {
+        console.log('[Content] Inject script reloaded successfully');
+        this.remove();
+        
+        // Send start message to reinitialize audio capture
+        window.postMessage({ type: 'VTF_START_CAPTURE' }, '*');
+      };
+      script.onerror = function() {
+        console.error('[Content] Failed to reload inject script');
+        showNotification('Failed to restart audio capture', 'error');
+      };
+      (document.head || document.documentElement).appendChild(script);
+    } else {
+      // Script exists, just restart capture
+      window.postMessage({ type: 'VTF_START_CAPTURE' }, '*');
+    }
+    
+    // Reset display if it exists
+    const display = document.getElementById('vtf-transcription-display');
+    if (display) {
+      const content = document.getElementById('vtf-transcription-content');
+      if (content) {
+        content.innerHTML = '';
+      }
+      
+      const countElement = document.getElementById('vtf-segment-count');
+      if (countElement) {
+        countElement.textContent = '0';
+      }
+    }
+    
+    console.log('[Content] Capture system reinitialized');
+    
+  } catch (error) {
+    console.error('[Content] Failed to reinitialize capture:', error);
+    showNotification('Failed to restart transcription', 'error');
+  }
+}
+
+// Enhanced extension validity check with recovery attempts
 function isExtensionValid() {
   try {
-    return chrome.runtime && chrome.runtime.id;
+    // Multiple checks to ensure extension is valid
+    if (!chrome.runtime || !chrome.runtime.id) {
+      return false;
+    }
+    
+    // Try to access extension URL to verify context
+    const testUrl = chrome.runtime.getURL('');
+    if (!testUrl || testUrl === '') {
+      return false;
+    }
+    
+    return true;
   } catch (e) {
     return false;
   }
 }
 
-// Listen for messages from popup/background
+// Periodic health check to detect issues early
+let healthCheckInterval = null;
+
+function startHealthMonitoring() {
+  if (healthCheckInterval) return;
+  
+  healthCheckInterval = setInterval(() => {
+    if (!isExtensionValid()) {
+      console.warn('[Content] Extension validity check failed, attempting recovery');
+      clearInterval(healthCheckInterval);
+      healthCheckInterval = null;
+      attemptAutoRecovery();
+    }
+  }, 30000); // Check every 30 seconds
+}
+
+function stopHealthMonitoring() {
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
+  }
+}
+
+// Start health monitoring when content script loads
+startHealthMonitoring();
+
+// Enhanced message handling with health checks and auto-recovery
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (!isExtensionValid()) {
-    console.warn('[Content] Extension context invalid, ignoring message');
+    console.warn('[Content] Extension context invalid, attempting auto-recovery');
+    attemptAutoRecovery();
     return false;
   }
   
   try {
+    // Handle health check from background script
+    if (request.type === 'health_check') {
+      console.log('[Content] Health check received - responding healthy');
+      sendResponse({ status: 'healthy', timestamp: Date.now() });
+      return false;
+    }
+    
+    // Handle restart request from background script
+    if (request.type === 'restart_capture') {
+      console.log('[Content] Restart capture requested - reinitializing');
+      reinitializeCapture();
+      sendResponse({ status: 'restarted', timestamp: Date.now() });
+      return false;
+    }
+    
     if (request.action === 'startManualCapture' || request.type === 'start_capture') {
       console.log('[Content] Manual capture start requested');
       window.postMessage({ type: 'VTF_START_CAPTURE' }, '*');
@@ -254,7 +378,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } catch (error) {
     console.error('[Content] Error handling message:', error);
     if (error.message.includes('context invalidated')) {
-      showReloadNotification();
+      attemptAutoRecovery();
     }
     return false;
   }

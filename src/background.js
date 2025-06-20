@@ -95,38 +95,43 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     console.log('Extension installed/updated: VTF Transcriber state initialized.');
 });
 
+// Enhanced initialization with recovery capabilities
 async function initializeState() {
-    const persistedState = await storage.initState();
-    console.log('[Background] Loaded persisted state:', persistedState);
+    console.log('[Background] Service Worker starting - initializing state...');
     
-    state.isCapturing = persistedState.isCapturing;
-    state.apiKey = persistedState.apiKey;
-    
-    console.log('[Background] Initialized state:', { 
-        isCapturing: state.isCapturing, 
-        hasApiKey: !!state.apiKey,
-        apiKeyLength: state.apiKey ? state.apiKey.length : 0
-    });
-    
-    // If API key is missing, try to load it directly
-    if (!state.apiKey) {
-        console.log('[Background] API key missing, attempting direct load...');
-        const directApiKey = await storage.getApiKey();
-        console.log('[Background] Direct API key load result:', { hasKey: !!directApiKey, keyLength: directApiKey ? directApiKey.length : 0 });
-        if (directApiKey) {
-            state.apiKey = directApiKey;
+    try {
+        // Load state with retry logic
+        const loadedState = await handleOperationWithRetry(async () => {
+            return await storage.initState();
+        });
+        
+        // Merge loaded state
+        state = { ...state, ...loadedState };
+        console.log('[Background] State loaded:', { 
+            hasApiKey: !!state.apiKey, 
+            isCapturing: state.isCapturing 
+        });
+        
+        // Initialize conversation processor if we have an API key and were capturing
+        if (state.apiKey && state.isCapturing) {
+            console.log('[Background] Restoring conversation processor from previous session');
+            conversationProcessor = new ConversationProcessor(state.apiKey, state.conversationProcessorState);
+            
+            // Start service worker optimizations
+            startKeepAlive();
+            startHealthCheck();
+            
+            // Attempt to reconnect to any active VTF tabs
+            setTimeout(async () => {
+                await attemptSystemRecovery();
+            }, 2000); // Give tabs time to load
         }
-    }
-    
-    if (state.isCapturing && state.apiKey) {
-        // If we were in the middle of capturing, resume the session
-        conversationProcessor = new ConversationProcessor(state.apiKey, persistedState.conversationProcessorState);
-        console.log("VTF Transcriber session resumed from storage.");
-    } else {
-        // Otherwise, ensure capturing is marked as false
+        
+    } catch (error) {
+        console.error('[Background] Failed to initialize state:', error);
+        // Continue with default state
+        state.apiKey = null;
         state.isCapturing = false;
-        await storage.setCapturingState(false);
-        console.log("VTF Transcriber state initialized. Not currently capturing.");
     }
 }
 
@@ -140,49 +145,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 function handleMessage(message, sender, sendResponse) {
     console.log(`[Background] Received message: type=${message.type}`, message);
+    
+    // Update last activity timestamp
+    state.lastActivity = Date.now();
 
     switch (message.type) {
         case 'audioData':
-            if (!state.apiKey) {
-                console.error('[Background] No API key available for audio processing');
-                sendResponse({ status: 'error', message: 'No API key available' });
-                return false;
-            }
-            
-            if (!conversationProcessor) {
-                console.log('[Background] Creating new ConversationProcessor for audio processing');
-                conversationProcessor = new ConversationProcessor(state.apiKey);
-            }
-            
-            // Process audio asynchronously but don't wait for it
-            conversationProcessor.processAudio(message.audioData, message.streamId, message.timestamp)
-                .catch(error => console.error('[Background] Error processing audio:', error));
-            sendResponse({ status: 'received' });
-            return false;
+            handleAudioDataWithRetry(message, sendResponse);
+            return true; // Async response
 
         case 'startCapture':
-            startCapture(message.apiKey).then(() => sendResponse({ status: 'capturing' }));
-            return true;
+            handleStartCaptureWithRetry(message, sendResponse);
+            return true; // Async response
 
         case 'stopCapture':
-            stopCapture().then(() => sendResponse({ status: 'stopped' }));
-            return true;
+            handleStopCaptureWithRetry(sendResponse);
+            return true; // Async response
 
         case 'setApiKey':
-            // Handle API key updates from options page
-            if (message.apiKey) {
-                state.apiKey = message.apiKey;
-                storage.setApiKey(message.apiKey).then(() => {
-                    console.log('[Background] API key updated from options page');
-                    sendResponse({ status: 'updated' });
-                }).catch(error => {
-                    console.error('[Background] Failed to save API key:', error);
-                    sendResponse({ status: 'error', message: error.message });
-                });
-            } else {
-                sendResponse({ status: 'error', message: 'No API key provided' });
-            }
-            return true;
+            handleSetApiKeyWithRetry(message, sendResponse);
+            return true; // Async response
 
         case 'getStatus':
             if (conversationProcessor) {
@@ -202,8 +184,8 @@ function handleMessage(message, sender, sendResponse) {
             return false;
 
         case 'clearData':
-            clearAllData().then(() => sendResponse({ status: 'cleared' }));
-            return true;
+            handleClearDataWithRetry(sendResponse);
+            return true; // Async response
             
         case 'getTranscriptions':
             // Get transcriptions from conversation processor
@@ -241,34 +223,12 @@ function handleMessage(message, sender, sendResponse) {
             return false;
             
         case 'importSessionData':
-            // Import session data for restore
-            if (message.sessionData && message.sessionData.transcriptions) {
-                // Create or update conversation processor with imported data
-                if (!conversationProcessor) {
-                    conversationProcessor = new ConversationProcessor(state.apiKey);
-                }
-                
-                // Set the imported segments
-                conversationProcessor.completedSegments = message.sessionData.transcriptions;
-                conversationProcessor.sessionCost = message.sessionData.sessionCost || 0;
-                conversationProcessor.totalProcessedDuration = message.sessionData.totalDuration || 0;
-                
-                // Save to storage
-                storage.setConversationProcessorState(conversationProcessor.getState()).then(() => {
-                    console.log(`[Background] Imported ${message.sessionData.transcriptions.length} transcriptions`);
-                    sendResponse({ status: 'imported', count: message.sessionData.transcriptions.length });
-                }).catch(error => {
-                    console.error('[Background] Failed to save imported session:', error);
-                    sendResponse({ status: 'error', message: 'Failed to save imported data' });
-                });
-            } else {
-                sendResponse({ status: 'error', message: 'Invalid session data' });
-            }
-            return true;
-            
+            handleImportSessionDataWithRetry(message, sendResponse);
+            return true; // Async response
+
         default:
-            // Handle other synchronous messages if any, or just log them
-            console.warn(`[Background] Unhandled message type: ${message.type}`);
+            console.warn(`[Background] Unknown message type: ${message.type}`);
+            sendResponse({ status: 'unknown_message_type' });
             return false;
     }
 }
@@ -276,27 +236,48 @@ function handleMessage(message, sender, sendResponse) {
 // --- Core Logic ---
 
 async function startCapture(apiKey) {
-    if (state.isCapturing) return;
+    console.log('[Background] Starting capture session...');
     
-    console.log('Starting capture session...');
+    if (apiKey) {
+        state.apiKey = apiKey;
+        await storage.setApiKey(apiKey);
+    }
+    
+    if (!state.apiKey) {
+        throw new Error('No API key available');
+    }
+    
+    // Create conversation processor
+    conversationProcessor = new ConversationProcessor(state.apiKey);
     state.isCapturing = true;
-    state.apiKey = apiKey;
+    state.lastActivity = Date.now();
+    state.reconnectAttempts = 0; // Reset reconnection attempts
     
-    // Create a new processor for the new session
-    conversationProcessor = new ConversationProcessor(apiKey);
+    await updateState({ isCapturing: true });
     
-    await storage.setApiKey(apiKey);
-    await storage.setCapturingState(true);
-    await storage.setConversationProcessorState(conversationProcessor.getState()); // Save initial state
+    // Start service worker optimizations
+    startKeepAlive();
+    startHealthCheck();
     
-    if (conversationProcessor) conversationProcessor.updateUIs();
+    // Send start message to all VTF tabs
+    const tabs = await chrome.tabs.query({ url: "*://vtf.t3live.com/*" });
+    for (const tab of tabs) {
+        try {
+            await chrome.tabs.sendMessage(tab.id, { type: 'start_capture' });
+        } catch (error) {
+            console.warn(`[Background] Could not send start message to tab ${tab.id}:`, error);
+        }
+    }
     
-    // Notify content script to start (if needed)
-    // This might not be necessary if content script is always listening
+    console.log('[Background] Capture session started successfully');
 }
 
 async function stopCapture() {
     console.log('[Background] Stopping capture');
+    
+    // Stop service worker optimizations
+    stopKeepAlive();
+    stopHealthCheck();
     
     // Properly cleanup conversation processor to prevent memory leaks
     if (conversationProcessor) {
@@ -305,6 +286,7 @@ async function stopCapture() {
     }
     
     state.isCapturing = false;
+    state.reconnectAttempts = 0;
     await updateState({ isCapturing: false });
     
     // Send stop message to all tabs
@@ -374,3 +356,217 @@ initializeState();
 
 // Note: Status updates are now handled by ConversationProcessor.updateUIs() 
 // when new transcriptions are processed, so no periodic updates are needed.
+
+// Automatic recovery system
+async function attemptSystemRecovery() {
+    console.log('[Background] Attempting system recovery...');
+    
+    if (state.reconnectAttempts >= state.maxReconnectAttempts) {
+        console.error('[Background] Max reconnection attempts reached, stopping capture');
+        await stopCapture();
+        notifyError('Transcription stopped due to connection issues. Please restart manually.');
+        return false;
+    }
+    
+    state.reconnectAttempts++;
+    
+    try {
+        // Try to reinitialize the conversation processor
+        if (!conversationProcessor && state.apiKey) {
+            console.log('[Background] Reinitializing conversation processor');
+            conversationProcessor = new ConversationProcessor(state.apiKey);
+        }
+        
+        // Ping content scripts to check if they're responsive
+        const tabs = await chrome.tabs.query({ url: "*://vtf.t3live.com/*" });
+        let healthyTabs = 0;
+        
+        for (const tab of tabs) {
+            try {
+                await chrome.tabs.sendMessage(tab.id, { type: 'health_check' });
+                healthyTabs++;
+            } catch (error) {
+                console.warn(`[Background] Tab ${tab.id} not responsive, attempting recovery`);
+                // Try to restart content script
+                try {
+                    await chrome.tabs.sendMessage(tab.id, { type: 'restart_capture' });
+                } catch (restartError) {
+                    console.error(`[Background] Failed to restart tab ${tab.id}:`, restartError);
+                }
+            }
+        }
+        
+        if (healthyTabs > 0) {
+            console.log(`[Background] System recovery successful, ${healthyTabs} tabs responsive`);
+            state.reconnectAttempts = 0; // Reset counter on success
+            state.lastActivity = Date.now();
+            return true;
+        } else {
+            console.warn('[Background] No responsive tabs found during recovery');
+            return false;
+        }
+        
+    } catch (error) {
+        console.error('[Background] System recovery failed:', error);
+        return false;
+    }
+}
+
+// Enhanced error handling with retry logic
+async function handleOperationWithRetry(operation, maxRetries = 3, backoffMs = 1000) {
+    let lastError;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const result = await operation();
+            if (attempt > 1) {
+                console.log(`[Background] Operation succeeded on attempt ${attempt}`);
+            }
+            return result;
+        } catch (error) {
+            lastError = error;
+            console.warn(`[Background] Operation failed on attempt ${attempt}:`, error);
+            
+            if (attempt < maxRetries) {
+                const delay = backoffMs * Math.pow(2, attempt - 1); // Exponential backoff
+                console.log(`[Background] Retrying in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+    
+    throw lastError;
+}
+
+// Notification helper for user feedback
+function notifyError(message) {
+    chrome.runtime.sendMessage({
+        type: 'error',
+        message: message,
+        recoverable: true
+    }).catch(() => {});
+}
+
+function notifySuccess(message) {
+    chrome.runtime.sendMessage({
+        type: 'success',
+        message: message
+    }).catch(() => {});
+}
+
+// Retry-enabled message handlers
+async function handleAudioDataWithRetry(message, sendResponse) {
+    try {
+        await handleOperationWithRetry(async () => {
+            if (!state.apiKey) {
+                throw new Error('No API key available for audio processing');
+            }
+            
+            if (!conversationProcessor) {
+                console.log('[Background] Creating new ConversationProcessor for audio processing');
+                conversationProcessor = new ConversationProcessor(state.apiKey);
+            }
+            
+            // Process audio asynchronously
+            await conversationProcessor.processAudio(message.audioData, message.streamId, message.timestamp);
+        });
+        
+        sendResponse({ status: 'received' });
+    } catch (error) {
+        console.error('[Background] Audio processing failed after retries:', error);
+        sendResponse({ status: 'error', message: error.message });
+    }
+}
+
+async function handleStartCaptureWithRetry(message, sendResponse) {
+    try {
+        await handleOperationWithRetry(async () => {
+            await startCapture(message.apiKey);
+        });
+        
+        sendResponse({ status: 'capturing' });
+        notifySuccess('Transcription started successfully');
+    } catch (error) {
+        console.error('[Background] Start capture failed after retries:', error);
+        sendResponse({ status: 'error', message: error.message });
+        notifyError('Failed to start transcription. Please try again.');
+    }
+}
+
+async function handleStopCaptureWithRetry(sendResponse) {
+    try {
+        await handleOperationWithRetry(async () => {
+            await stopCapture();
+        });
+        
+        sendResponse({ status: 'stopped' });
+        notifySuccess('Transcription stopped');
+    } catch (error) {
+        console.error('[Background] Stop capture failed after retries:', error);
+        sendResponse({ status: 'error', message: error.message });
+    }
+}
+
+async function handleSetApiKeyWithRetry(message, sendResponse) {
+    try {
+        await handleOperationWithRetry(async () => {
+            if (!message.apiKey) {
+                throw new Error('No API key provided');
+            }
+            
+            state.apiKey = message.apiKey;
+            await storage.setApiKey(message.apiKey);
+            console.log('[Background] API key updated from options page');
+        });
+        
+        sendResponse({ status: 'updated' });
+    } catch (error) {
+        console.error('[Background] API key update failed after retries:', error);
+        sendResponse({ status: 'error', message: error.message });
+    }
+}
+
+async function handleClearDataWithRetry(sendResponse) {
+    try {
+        await handleOperationWithRetry(async () => {
+            await clearAllData();
+        });
+        
+        sendResponse({ status: 'cleared' });
+        notifySuccess('All data cleared successfully');
+    } catch (error) {
+        console.error('[Background] Clear data failed after retries:', error);
+        sendResponse({ status: 'error', message: error.message });
+    }
+}
+
+async function handleImportSessionDataWithRetry(message, sendResponse) {
+    try {
+        await handleOperationWithRetry(async () => {
+            if (!message.sessionData || !message.sessionData.transcriptions) {
+                throw new Error('Invalid session data');
+            }
+            
+            // Create or update conversation processor with imported data
+            if (!conversationProcessor) {
+                conversationProcessor = new ConversationProcessor(state.apiKey);
+            }
+            
+            // Set the imported segments
+            conversationProcessor.completedSegments = message.sessionData.transcriptions;
+            conversationProcessor.sessionCost = message.sessionData.sessionCost || 0;
+            conversationProcessor.totalProcessedDuration = message.sessionData.totalDuration || 0;
+            
+            // Save to storage
+            await storage.setConversationProcessorState(conversationProcessor.getState());
+            console.log(`[Background] Imported ${message.sessionData.transcriptions.length} transcriptions`);
+        });
+        
+        sendResponse({ status: 'imported', count: message.sessionData.transcriptions.length });
+        notifySuccess(`Imported ${message.sessionData.transcriptions.length} transcriptions`);
+    } catch (error) {
+        console.error('[Background] Import session failed after retries:', error);
+        sendResponse({ status: 'error', message: error.message });
+        notifyError('Failed to import session data');
+    }
+}
