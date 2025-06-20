@@ -230,6 +230,12 @@ function handleMessage(message, sender, sendResponse) {
             handleImportSessionDataWithRetry(message, sendResponse);
             return true; // Async response
 
+        case 'registerAudioWorklet':
+            // This is just a notification that the AudioWorklet is being registered
+            // No action needed in background script
+            sendResponse({ status: 'ok' });
+            return false;
+
         default:
             console.warn(`[Background] Unknown message type: ${message.type}`);
             sendResponse({ status: 'unknown_message_type' });
@@ -271,7 +277,7 @@ async function startCapture(apiKey) {
     state.lastActivity = Date.now();
     state.reconnectAttempts = 0; // Reset reconnection attempts
     
-    await updateState({ isCapturing: true });
+    await storage.setCapturingState(true);
     
     // Start service worker optimizations
     startKeepAlive();
@@ -305,7 +311,7 @@ async function stopCapture() {
     
     state.isCapturing = false;
     state.reconnectAttempts = 0;
-    await updateState({ isCapturing: false });
+    await storage.setCapturingState(false);
     
     // Send stop message to all tabs
     const tabs = await chrome.tabs.query({ url: "*://vtf.t3live.com/*" });
@@ -321,7 +327,7 @@ async function stopCapture() {
 async function clearAllData() {
     console.log('Clearing all data...');
     await stopCapture();
-    await storage.clearAll();
+    await storage.clearSession();
     // Re-initialize to a clean state
     if (conversationProcessor) {
         conversationProcessor.updateUIs(); // Update UI to reflect cleared state
