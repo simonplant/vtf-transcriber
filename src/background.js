@@ -2,14 +2,12 @@
  * @file background.js
  * @path src/background.js
  * @description Service worker orchestrating audio processing, API calls, and state management.
- * @modified 2024-07-26
+ * @modified 2024-07-27
  * @requires storage.js
- * @requires api.js
  * @requires conversation.js
  */
 
 import * as storage from './storage.js';
-import { processAudioChunk } from './api.js';
 import { ConversationProcessor } from './conversation.js';
 
 // --- Global State ---
@@ -19,7 +17,6 @@ let state = {
 };
 
 let conversationProcessor;
-
 
 // --- Service Worker Lifecycle ---
 
@@ -36,254 +33,229 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     console.log('Extension installed/updated: VTF Transcriber state initialized.');
 });
 
-
-/**
- * Initializes the in-memory state from chrome.storage.
- */
 async function initializeState() {
     const persistedState = await storage.initState();
+    console.log('[Background] Loaded persisted state:', persistedState);
+    
     state.isCapturing = persistedState.isCapturing;
     state.apiKey = persistedState.apiKey;
     
-    // Initialize conversation processor with its persisted state
-    conversationProcessor = new ConversationProcessor(persistedState.conversationProcessorState);
+    console.log('[Background] Initialized state:', { 
+        isCapturing: state.isCapturing, 
+        hasApiKey: !!state.apiKey,
+        apiKeyLength: state.apiKey ? state.apiKey.length : 0
+    });
     
-    console.log("VTF Transcriber state initialized from storage.");
+    // If API key is missing, try to load it directly
+    if (!state.apiKey) {
+        console.log('[Background] API key missing, attempting direct load...');
+        const directApiKey = await storage.getApiKey();
+        console.log('[Background] Direct API key load result:', { hasKey: !!directApiKey, keyLength: directApiKey ? directApiKey.length : 0 });
+        if (directApiKey) {
+            state.apiKey = directApiKey;
+        }
+    }
+    
+    if (state.isCapturing && state.apiKey) {
+        // If we were in the middle of capturing, resume the session
+        conversationProcessor = new ConversationProcessor(state.apiKey, persistedState.conversationProcessorState);
+        console.log("VTF Transcriber session resumed from storage.");
+    } else {
+        // Otherwise, ensure capturing is marked as false
+        state.isCapturing = false;
+        await storage.setCapturingState(false);
+        console.log("VTF Transcriber state initialized. Not currently capturing.");
+    }
 }
-
 
 // --- Message Handling ---
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    handleMessage(message, sender, sendResponse);
     // Return true to indicate we will send a response asynchronously
-    return true;
+    const isAsync = handleMessage(message, sender, sendResponse);
+    return isAsync;
 });
 
-async function handleMessage(message, sender, sendResponse) {
-    if (message.type === 'audioChunk') {
-        if (state.isCapturing) {
-            await handleAudioChunk(message.chunk, message.streamId);
-        }
-    } else if (message.type === 'startCapture') {
-        await startCapture(message.apiKey);
-        sendResponse({ status: 'capturing' });
-    } else if (message.type === 'stopCapture') {
-        await stopCapture();
-        sendResponse({ status: 'stopped' });
-    } else if (message.type === 'getStatus') {
-        // This is now push-based, but we can send a one-off status if requested.
-        sendStatus();
-        sendResponse({ status: 'ok' }); // Acknowledge the request
-    } else if (message.type === 'getTranscriptions') {
-        const transcriptions = await storage.getTranscriptions();
-        sendResponse({ transcriptions });
-    } else if (message.type === 'clearData') {
-        await clearAllData();
-        sendResponse({ status: 'cleared' });
-    } else if (message.type === 'getApiKey') {
-        // Re-check storage in case it was updated in another context
-        const key = await storage.getApiKey();
-        state.apiKey = key;
-        sendResponse({ apiKey: state.apiKey });
-    } else if (message.type === 'getCapturingState') {
-        sendResponse({ isCapturing: state.isCapturing });
-    } else if (message.type === 'getMarkdown') {
-        const transcriptions = await storage.getTranscriptions();
-        const markdown = generateMarkdown(transcriptions, message.scope); // scope can be 'session' or 'daily'
-        sendResponse({ markdown: markdown });
+function handleMessage(message, sender, sendResponse) {
+    console.log(`[Background] Received message: type=${message.type}`, message);
+
+    switch (message.type) {
+        case 'audioData':
+            if (!state.apiKey) {
+                console.error('[Background] No API key available for audio processing');
+                sendResponse({ status: 'error', message: 'No API key available' });
+                return false;
+            }
+            
+            if (!conversationProcessor) {
+                console.log('[Background] Creating new ConversationProcessor for audio processing');
+                conversationProcessor = new ConversationProcessor(state.apiKey);
+            }
+            
+            // Process audio asynchronously but don't wait for it
+            conversationProcessor.processAudio(message.audioData, message.streamId, message.timestamp)
+                .catch(error => console.error('[Background] Error processing audio:', error));
+            sendResponse({ status: 'received' });
+            return false;
+
+        case 'startCapture':
+            startCapture(message.apiKey).then(() => sendResponse({ status: 'capturing' }));
+            return true;
+
+        case 'stopCapture':
+            stopCapture().then(() => sendResponse({ status: 'stopped' }));
+            return true;
+
+        case 'setApiKey':
+            // Handle API key updates from options page
+            if (message.apiKey) {
+                state.apiKey = message.apiKey;
+                storage.setApiKey(message.apiKey).then(() => {
+                    console.log('[Background] API key updated from options page');
+                    sendResponse({ status: 'updated' });
+                }).catch(error => {
+                    console.error('[Background] Failed to save API key:', error);
+                    sendResponse({ status: 'error', message: error.message });
+                });
+            } else {
+                sendResponse({ status: 'error', message: 'No API key provided' });
+            }
+            return true;
+
+        case 'getStatus':
+            if (conversationProcessor) {
+                // Only send status update, don't force UI update that might send empty segments
+                const status = {
+                    isCapturing: true,
+                    transcriptionCount: conversationProcessor.completedSegments.length,
+                    activeSpeakers: conversationProcessor.speakerBuffers.size,
+                    sessionCost: conversationProcessor.sessionCost,
+                };
+                chrome.runtime.sendMessage({
+                    type: 'statusUpdate',
+                    status: status
+                }).catch(e => {}); // Ignore errors if popup is closed
+            }
+            sendResponse({ status: 'ok' });
+            return false;
+
+        case 'clearData':
+            clearAllData().then(() => sendResponse({ status: 'cleared' }));
+            return true;
+            
+        case 'getTranscriptions':
+            // Get transcriptions from conversation processor
+            if (conversationProcessor && conversationProcessor.completedSegments.length > 0) {
+                sendResponse({ transcriptions: conversationProcessor.completedSegments });
+            } else {
+                sendResponse({ transcriptions: [] });
+            }
+            return false;
+            
+        case 'getMarkdown':
+            // Generate markdown export
+            if (conversationProcessor && conversationProcessor.completedSegments.length > 0) {
+                const markdown = generateMarkdown(conversationProcessor.completedSegments, message.scope || 'session');
+                sendResponse({ markdown: markdown });
+            } else {
+                sendResponse({ markdown: null });
+            }
+            return false;
+            
+        case 'exportSessionData':
+            // Export session data for backup
+            if (conversationProcessor && conversationProcessor.completedSegments.length > 0) {
+                const sessionData = {
+                    transcriptions: conversationProcessor.completedSegments,
+                    sessionCost: conversationProcessor.sessionCost,
+                    totalDuration: conversationProcessor.totalProcessedDuration,
+                    exportDate: new Date().toISOString(),
+                    version: '1.0'
+                };
+                sendResponse({ sessionData: sessionData });
+            } else {
+                sendResponse({ sessionData: null });
+            }
+            return false;
+            
+        case 'importSessionData':
+            // Import session data for restore
+            if (message.sessionData && message.sessionData.transcriptions) {
+                // Create or update conversation processor with imported data
+                if (!conversationProcessor) {
+                    conversationProcessor = new ConversationProcessor(state.apiKey);
+                }
+                
+                // Set the imported segments
+                conversationProcessor.completedSegments = message.sessionData.transcriptions;
+                conversationProcessor.sessionCost = message.sessionData.sessionCost || 0;
+                conversationProcessor.totalProcessedDuration = message.sessionData.totalDuration || 0;
+                
+                // Save to storage
+                storage.setConversationProcessorState(conversationProcessor.getState()).then(() => {
+                    console.log(`[Background] Imported ${message.sessionData.transcriptions.length} transcriptions`);
+                    sendResponse({ status: 'imported', count: message.sessionData.transcriptions.length });
+                }).catch(error => {
+                    console.error('[Background] Failed to save imported session:', error);
+                    sendResponse({ status: 'error', message: 'Failed to save imported data' });
+                });
+            } else {
+                sendResponse({ status: 'error', message: 'Invalid session data' });
+            }
+            return true;
+            
+        default:
+            // Handle other synchronous messages if any, or just log them
+            console.warn(`[Background] Unhandled message type: ${message.type}`);
+            return false;
     }
 }
-
-function sendStatus() {
-     const status = getStatusPayload();
-     chrome.runtime.sendMessage({
-        type: 'statusUpdate',
-        status: status,
-    }).catch(e => {}); // Ignore errors, popup may be closed
-}
-
-/**
- * Gathers the current status to be sent to the popup.
- * @returns {object}
- */
-function getStatusPayload() {
-    const conversationState = conversationProcessor.getState();
-    const speakerBuffers = conversationState.speakerBuffers || {};
-    
-    return {
-        isCapturing: state.isCapturing,
-        transcriptionCount: conversationState.completedSegments.length,
-        activeSpeakers: Object.keys(speakerBuffers).length,
-        // Add other metrics as they are re-introduced
-    };
-}
-
-
-// --- Audio Processing Functions ---
-
-/**
- * A pipeline for processing raw audio data before sending to Whisper.
- * @param {Float32Array} data - The raw audio data.
- * @returns {Float32Array} - The processed audio data.
- */
-function preprocessAudioForWhisper(data) {
-    // For now, we only apply dynamic range compression as it's the most critical part.
-    // Other filters like high-pass can be added back here if needed.
-    return dynamicRangeCompression(data);
-}
-
-/**
- * Applies dynamic range compression to audio data.
- * Fixes stack overflow by using a loop for finding the max value.
- */
-function dynamicRangeCompression(data, threshold = 0.3, ratio = 4, makeupGain = 1.5) {
-    const compressed = new Float32Array(data.length);
-
-    for (let i = 0; i < data.length; i++) {
-        const sample = data[i];
-        const abs = Math.abs(sample);
-
-        if (abs > threshold) {
-            const excess = abs - threshold;
-            const compressedExcess = excess / ratio;
-            const compressedAbs = threshold + compressedExcess;
-            compressed[i] = Math.sign(sample) * compressedAbs * makeupGain;
-        } else {
-            compressed[i] = sample * makeupGain;
-        }
-    }
-
-    // Prevent clipping using a loop to avoid stack overflow
-    let maxVal = 0;
-    for (let i = 0; i < compressed.length; i++) {
-        const absVal = Math.abs(compressed[i]);
-        if (absVal > maxVal) {
-            maxVal = absVal;
-        }
-    }
-
-    if (maxVal > 0.95) {
-        const scale = 0.95 / maxVal;
-        for (let i = 0; i < compressed.length; i++) {
-            compressed[i] *= scale;
-        }
-    }
-
-    return compressed;
-}
-
-/**
- * Sanitizes transcription text, especially for highly repetitive content.
- */
-function postProcessTranscription(text) {
-    if (!text) return text;
-
-    // Check for excessive repetition
-    const words = text.toLowerCase().match(/\b\w+\b/g);
-    if (words && words.length > 10) {
-        const wordCounts = {};
-        words.forEach(w => { wordCounts[w] = (wordCounts[w] || 0) + 1; });
-        
-        const mostFrequent = Object.entries(wordCounts).sort((a, b) => b[1] - a[1])[0];
-        
-        // If a single word makes up >70% of the text, it's likely an API error.
-        if (mostFrequent && mostFrequent[1] / words.length > 0.7) {
-            const repeatedWord = mostFrequent[0];
-            // Return a sanitized, short version instead of the repetitive text.
-            console.warn(`[Post-process] Sanitized highly repetitive text for word: "${repeatedWord}"`);
-            return `${repeatedWord}, ${repeatedWord}, ${repeatedWord}.`;
-        }
-    }
-    
-    return text;
-}
-
 
 // --- Core Logic ---
 
 async function startCapture(apiKey) {
     if (state.isCapturing) return;
-    console.log('Starting capture...');
+    
+    console.log('Starting capture session...');
     state.isCapturing = true;
     state.apiKey = apiKey;
-    await storage.setCapturingState(true);
-    await storage.setApiKey(apiKey);
     
-    // Notify UI
-    sendStatus();
-
-    // Notify content script to start
-    const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
-    if (tab) {
-        chrome.tabs.sendMessage(tab.id, { type: 'start_capture' }).catch(e => console.error("Failed to send start_capture to content script:", e));
-    }
+    // Create a new processor for the new session
+    conversationProcessor = new ConversationProcessor(apiKey);
+    
+    await storage.setApiKey(apiKey);
+    await storage.setCapturingState(true);
+    await storage.setConversationProcessorState(conversationProcessor.getState()); // Save initial state
+    
+    if (conversationProcessor) conversationProcessor.updateUIs();
+    
+    // Notify content script to start (if needed)
+    // This might not be necessary if content script is always listening
 }
 
 async function stopCapture() {
     if (!state.isCapturing) return;
-    console.log('Stopping capture...');
+    
+    console.log('Stopping capture session...');
     state.isCapturing = false;
-    await storage.setCapturingState(false);
     
-    // Notify UI
-    sendStatus();
-
-    // Notify content script to stop
-    const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
-    if (tab) {
-        chrome.tabs.sendMessage(tab.id, { type: 'stop_capture' }).catch(e => console.error("Failed to send stop_capture to content script:", e));
-    }
-}
-
-async function handleAudioChunk(chunk, streamId) {
-    const audioData = new Float32Array(Object.values(chunk));
-
-    // 1. Pre-process the audio
-    const processedAudio = preprocessAudioForWhisper(audioData);
-
-    // 2. Send to API
-    const transcriptionResult = await processAudioChunk(processedAudio, streamId);
-    
-    if (transcriptionResult && transcriptionResult.text) {
-        // 3. Post-process the text
-        const processedText = postProcessTranscription(transcriptionResult.text);
-
-        const newTranscription = {
-            timestamp: Date.now(),
-            speaker: extractSpeakerName(streamId),
-            text: processedText,
-            duration: transcriptionResult.duration,
-            streamId: streamId,
-        };
-
-        await storage.addTranscription(newTranscription);
-        
-        conversationProcessor.addTranscript(newTranscription);
+    if (conversationProcessor) {
+        await conversationProcessor.finalizeAllStreams();
         await storage.setConversationProcessorState(conversationProcessor.getState());
-
-        sendStatus();
-        sendTranscriptionsToPopup();
+        conversationProcessor = null;
     }
-}
-
-async function sendTranscriptionsToPopup() {
-    const transcriptions = await storage.getTranscriptions();
-    chrome.runtime.sendMessage({
-        type: 'transcriptionsUpdate',
-        transcriptions: transcriptions,
-    }).catch(e => {}); // Ignore errors
+    
+    await storage.setCapturingState(false);
 }
 
 async function clearAllData() {
     console.log('Clearing all data...');
     await stopCapture();
-    await storage.clearSession(); // This now clears conversation processor state too
-    await storage.clearTranscriptions();
-    conversationProcessor.clearOldSegments();
-    await storage.setConversationProcessorState(conversationProcessor.getState()); // Persist cleared state
-    sendStatus();
-    sendTranscriptionsToPopup();
+    await storage.clearAll();
+    // Re-initialize to a clean state
+    if (conversationProcessor) {
+        conversationProcessor.updateUIs(); // Update UI to reflect cleared state
+    }
 }
 
 // --- Utility ---
@@ -330,9 +302,5 @@ function extractSpeakerName(streamId) {
 // Initialize state when the script first loads
 initializeState();
 
-// Also send status periodically to keep popup fresh if it's open
-setInterval(() => {
-    if (state.isCapturing) {
-        sendStatus();
-    }
-}, 3000);
+// Note: Status updates are now handled by ConversationProcessor.updateUIs() 
+// when new transcriptions are processed, so no periodic updates are needed.

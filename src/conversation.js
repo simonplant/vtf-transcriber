@@ -1,9 +1,16 @@
 /**
  * @file conversation.js
  * @path src/conversation.js
- * @description Handles conversation logic, including processing and structuring transcripts.
- * @modified 2024-07-26
+ * @description Handles conversation logic, including audio buffering, transcription, and structuring.
+ * @modified 2024-07-27
+ * @requires api.js
  */
+
+import { processAudioChunk } from './api.js';
+
+// Speaker name mapping for better display
+const speakerNameMap = new Map();
+let speakerCounter = 1;
 
 /**
  * Extracts a speaker's name from a stream ID.
@@ -13,188 +20,257 @@
  */
 function extractSpeakerName(streamId) {
     if (!streamId) return 'Unknown Speaker';
-    // Fallback for local stream
     if (streamId === 'local-stream') return 'Me';
-
-    const parts = streamId.split('-');
-    if (parts.length > 3) {
-        // Assumes name is at the end, handles names with spaces
-        return parts.slice(3).join(' ');
+    
+    // Check if we already have a mapped name for this stream ID
+    if (speakerNameMap.has(streamId)) {
+        return speakerNameMap.get(streamId);
     }
-    return streamId; // Fallback to full ID if format is unexpected
+    
+    // Handle VTF stream IDs like "msRemAudio-kB13khVfculpSKeoAFBz-5f523f02117fcb4cab91ca51"
+    if (streamId.startsWith('msRemAudio-')) {
+        // Extract the user ID part
+        const userPart = streamId.replace('msRemAudio-', '');
+        
+        // Create a readable speaker name
+        let speakerName;
+        
+        // Try to extract a meaningful identifier from the user ID
+        const parts = userPart.split('-');
+        if (parts.length >= 2) {
+            // Use first 6 characters of the first part as identifier
+            const shortId = parts[0].substring(0, 6);
+            speakerName = `Speaker ${shortId}`;
+        } else if (userPart.length > 8) {
+            // Use first 6 characters as identifier
+            const shortId = userPart.substring(0, 6);
+            speakerName = `Speaker ${shortId}`;
+        } else {
+            // Assign a sequential speaker number
+            speakerName = `Speaker ${speakerCounter++}`;
+        }
+        
+        // Store the mapping for consistency
+        speakerNameMap.set(streamId, speakerName);
+        console.log(`[Conversation] Mapped stream ${streamId} to ${speakerName}`);
+        return speakerName;
+    }
+    
+    // Fallback for other stream ID formats
+    let speakerName = `Speaker ${speakerCounter++}`;
+    speakerNameMap.set(streamId, speakerName);
+    return speakerName;
 }
 
+/**
+ * Sanitizes transcription text, especially for highly repetitive content.
+ */
+function postProcessTranscription(text) {
+    if (!text) return text;
+
+    // Check for excessive repetition
+    const words = text.toLowerCase().match(/\b\\w+\b/g);
+    if (words && words.length > 10) {
+        const wordCounts = {};
+        words.forEach(w => { wordCounts[w] = (wordCounts[w] || 0) + 1; });
+        
+        const mostFrequent = Object.entries(wordCounts).sort((a, b) => b[1] - a[1])[0];
+        
+        // If a single word makes up >70% of the text, it's likely an API error.
+        if (mostFrequent && mostFrequent[1] / words.length > 0.7) {
+            const repeatedWord = mostFrequent[0];
+            // Return a sanitized, short version instead of the repetitive text.
+            console.warn(`[Post-process] Sanitized highly repetitive text for word: "${repeatedWord}"`);
+            return `${repeatedWord}, ${repeatedWord}, ${repeatedWord}.`;
+        }
+    }
+    
+    return text;
+}
 
 export class ConversationProcessor {
-    constructor(initialState) {
+    constructor(apiKey, initialState) {
+        this.apiKey = apiKey;
+        this.completedSegments = [];
+        this.speakerBuffers = new Map();
+        this.totalProcessedDuration = 0;
+        this.sessionCost = 0;
+
         if (initialState) {
-            this.speakerBuffers = new Map(Object.entries(initialState.speakerBuffers || {}));
-            this.completedSegments = initialState.completedSegments || [];
-        } else {
-            this.speakerBuffers = new Map(); // streamId -> {chunks, lastActivity, processed}
-            this.completedSegments = [];
+            this.setState(initialState);
         }
-        this.SPEAKER_TIMEOUT = 10000; // 10 seconds to determine speaker finished
-        this.MIN_SEGMENT_LENGTH = 15; // 15 seconds before processing
+
+        this.SPEAKER_TIMEOUT_MS = 1500; // End of speech delay (reduced from 3000ms)
+        this.MAX_SEGMENT_DURATION_S = 5; // Max audio length to send to API (reduced from 30s)
+        this.cleanupInterval = setInterval(() => this.finalizeCompletedStreams(), this.SPEAKER_TIMEOUT_MS);
     }
 
     getState() {
         return {
-            speakerBuffers: Object.fromEntries(this.speakerBuffers),
             completedSegments: this.completedSegments,
+            totalProcessedDuration: this.totalProcessedDuration,
+            sessionCost: this.sessionCost,
+            speakerBuffers: Array.from(this.speakerBuffers.entries()),
         };
     }
 
     setState(state) {
-        this.speakerBuffers = new Map(Object.entries(state.speakerBuffers || {}));
         this.completedSegments = state.completedSegments || [];
+        this.totalProcessedDuration = state.totalProcessedDuration || 0;
+        this.sessionCost = state.sessionCost || 0;
+        
+        // Fix: speakerBuffers should be an array of [key, value] pairs for Map constructor
+        if (state.speakerBuffers && Array.isArray(state.speakerBuffers)) {
+            this.speakerBuffers = new Map(state.speakerBuffers);
+        } else {
+            this.speakerBuffers = new Map();
+        }
     }
 
-    addTranscript(transcript) {
-        const streamId = transcript.streamId;
-        const now = Date.now();
-
+    async processAudio(audioData, streamId, timestamp) {
         if (!this.speakerBuffers.has(streamId)) {
-            this.speakerBuffers.set(streamId, {
-                chunks: [],
-                lastActivity: now,
-                processed: false
-            });
+            this.speakerBuffers.set(streamId, this.createSpeakerBuffer(timestamp));
         }
 
         const buffer = this.speakerBuffers.get(streamId);
-        buffer.chunks.push(transcript);
-        buffer.lastActivity = now;
-
-        this.checkForCompletedSegments();
-    }
-
-    checkForCompletedSegments() {
-        const now = Date.now();
-        this.speakerBuffers.forEach((buffer, streamId) => {
-            const timeSinceActivity = now - buffer.lastActivity;
-            const totalDuration = buffer.chunks.reduce((sum, chunk) => sum + (chunk.duration || 3), 0);
-            
-            if (!buffer.processed && (timeSinceActivity > this.SPEAKER_TIMEOUT || totalDuration > this.MIN_SEGMENT_LENGTH)) {
-                this.processSpeakerSegment(streamId, buffer);
-            }
-        });
-    }
-
-    processSpeakerSegment(streamId, buffer) {
-        if (buffer.chunks.length === 0) return;
-
-        buffer.processed = true;
-
-        const mergedText = this.mergeChunks(buffer.chunks);
-        const cleanedText = this.cleanText(mergedText);
-        const topicTitle = this.detectTopic(cleanedText);
-
-        const processedSegment = {
-            speaker: buffer.chunks[0].speaker || extractSpeakerName(streamId),
-            text: cleanedText,
-            topic: topicTitle,
-            startTime: buffer.chunks[0].timestamp,
-            endTime: buffer.chunks[buffer.chunks.length - 1].timestamp,
-            duration: buffer.chunks.reduce((sum, chunk) => sum + (chunk.duration || 3), 0),
-            confidence: this.calculateAverageConfidence(buffer.chunks),
-            streamId: streamId,
-            channelInfo: buffer.chunks[0].channelInfo || {}
-        };
-
-        this.completedSegments.push(processedSegment);
-
-        // Notify about the processed segment
-        chrome.runtime.sendMessage({
-            type: 'processedTranscription',
-            segment: processedSegment
-        }).catch(err => console.log("Message sending failed:", err));
-
-
-        // Reset buffer for new segments
-        buffer.chunks = [];
-        buffer.processed = false;
+        buffer.audioChunks.push(audioData);
+        buffer.duration += audioData.length / 16000; // 16kHz sample rate
         buffer.lastActivity = Date.now();
+
+        if (buffer.duration >= this.MAX_SEGMENT_DURATION_S) {
+            await this.transcribeAndProcessSegment(streamId);
+        }
+    }
+    
+    async finalizeAllStreams() {
+        console.log("Finalizing all active speaker buffers...");
+        for (const streamId of this.speakerBuffers.keys()) {
+            await this.transcribeAndProcessSegment(streamId);
+        }
     }
 
-    mergeChunks(chunks) {
-        if (chunks.length === 0) return '';
-        let merged = chunks[0].text;
-        for (let i = 1; i < chunks.length; i++) {
-            const currentText = chunks[i].text.trim();
-            const lastChar = merged[merged.length - 1];
-            if (lastChar && lastChar.match(/[.!?]$/)) {
-                merged += ' ' + currentText;
-            } else if (currentText[0] && currentText[0].match(/[A-Z]/)) {
-                merged += '. ' + currentText;
-            } else {
-                merged += ' ' + currentText;
+    async finalizeCompletedStreams() {
+        const now = Date.now();
+        for (const [streamId, buffer] of this.speakerBuffers.entries()) {
+            if (now - buffer.lastActivity > this.SPEAKER_TIMEOUT_MS && buffer.audioChunks.length > 0) {
+                console.log(`Stream ${streamId} timed out. Processing segment.`);
+                await this.transcribeAndProcessSegment(streamId);
             }
         }
-        return merged;
+    }
+    
+    createSpeakerBuffer(timestamp) {
+        return {
+            audioChunks: [],
+            startTime: timestamp,
+            duration: 0,
+            lastActivity: Date.now(),
+        };
     }
 
-    cleanText(text) {
-        text = text.replace(/\b(um|uh|you know|like|actually)\b/gi, '');
-        text = text.replace(/\bgonna\b/gi, 'going to');
-        text = text.replace(/\bcause\b/gi, 'because');
-        text = text.replace(/\bwanna\b/gi, 'want to');
-        text = text.replace(/\bgotta\b/gi, 'got to');
-        text = text.replace(/\bis\s+not\b/gi, "isn't");
-        text = text.replace(/\bdo\s+not\b/gi, "don't");
-        text = text.replace(/\bdoes\s+not\b/gi, "doesn't");
-        text = text.replace(/\bcan\s+not\b/gi, "can't");
-        text = text.replace(/\bwill\s+not\b/gi, "won't");
-        text = text.replace(/\b(\w+)(\s+\1){2,}\b/gi, '$1');
-        text = text.replace(/\s+/g, ' ');
-        text = text.replace(/\s+([,.!?])/g, '$1');
-        text = text.replace(/([,.!?])\s*([a-z])/g, '$1 $2');
-        text = text.replace(/(^|[.!?]\s+)([a-z])/g, (match, p1, p2) => p1 + p2.toUpperCase());
-        return text.trim();
-    }
-
-    detectTopic(text) {
-        const topics = [
-            { keywords: ['spy', 'qqq', 'iwm', 'dia', 'market', 'futures', 'index', 'dow', 'nasdaq'], title: 'Market Overview' },
-            { keywords: ['call', 'put', 'option', 'strike', 'expiry', 'premium', 'gamma', 'delta'], title: 'Options Trading' },
-            { keywords: ['buy', 'sell', 'long', 'short', 'position', 'stop', 'target', 'entry', 'exit'], title: 'Trade Setup' },
-            { keywords: ['chart', 'support', 'resistance', 'trend', 'breakout', 'pattern', 'level', 'technical'], title: 'Technical Analysis' },
-            { keywords: ['earnings', 'revenue', 'guidance', 'eps', 'beat', 'miss', 'report', 'quarter'], title: 'Earnings' },
-            { keywords: ['fed', 'fomc', 'powell', 'rates', 'inflation', 'cpi', 'pce', 'policy'], title: 'Fed & Macro' },
-            { keywords: ['tesla', 'apple', 'microsoft', 'nvidia', 'amazon', 'meta', 'google', 'aapl', 'msft', 'nvda', 'amzn'], title: 'Big Tech' },
-            { keywords: ['vix', 'volatility', 'fear', 'greed', 'sentiment', 'risk'], title: 'Market Sentiment' }
-        ];
-
-        const textLower = text.toLowerCase();
-        let bestMatch = { topic: null, score: 0 };
-
-        for (const topic of topics) {
-            const matches = topic.keywords.filter(keyword => textLower.includes(keyword));
-            const score = matches.length;
-            if (score > bestMatch.score) {
-                bestMatch = { topic: topic.title, score: score };
-            }
+    async transcribeAndProcessSegment(streamId) {
+        const buffer = this.speakerBuffers.get(streamId);
+        if (!buffer || buffer.audioChunks.length === 0) {
+            console.log(`[Conversation] No audio to process for stream ${streamId}`);
+            return;
         }
 
-        if (bestMatch.score >= 2) return bestMatch.topic;
-        if (textLower.match(/\b\d{2,3}\b/) && textLower.match(/\b(call|put|strike)\b/)) return 'Options Trading';
-        if (textLower.match(/\b(buy|sell|long|short)\b/) && textLower.match(/\b\d+\b/)) return 'Trade Setup';
+        console.log(`[Conversation] Processing segment for stream ${streamId} with ${buffer.audioChunks.length} chunks`);
+        const concatenatedAudio = this.concatenateAudioChunks(buffer.audioChunks);
+        const segmentDuration = concatenatedAudio.length / 16000;
+        
+        // Reset buffer before the async API call
+        const segmentStartTime = buffer.startTime;
+        buffer.audioChunks = [];
+        buffer.duration = 0;
+        buffer.startTime = Date.now(); // Set new start time for the next segment
 
-        return 'Market Commentary';
+        const apiResult = await processAudioChunk(concatenatedAudio, streamId, this.apiKey);
+        console.log(`[Conversation] API result for stream ${streamId}:`, apiResult);
+
+        if (apiResult && apiResult.transcription && apiResult.transcription.text) {
+            const processedText = postProcessTranscription(apiResult.transcription.text);
+            console.log(`[Conversation] Processed text for stream ${streamId}: "${processedText}"`);
+            
+            this.totalProcessedDuration += segmentDuration;
+            this.sessionCost = this.calculateSessionCost();
+
+            const speakerName = extractSpeakerName(streamId);
+            console.log(`[Conversation] Extracted speaker name for ${streamId}: "${speakerName}"`);
+
+            const newSegment = {
+                text: processedText,
+                speaker: speakerName,
+                timestamp: segmentStartTime,
+                duration: segmentDuration,
+                confidence: this.calculateAverageConfidence(apiResult.transcription.segments),
+            };
+
+            console.log(`[Conversation] Created segment:`, {
+                speaker: newSegment.speaker,
+                text: newSegment.text.substring(0, 50) + '...',
+                timestamp: new Date(newSegment.timestamp).toISOString(),
+                duration: newSegment.duration.toFixed(1) + 's'
+            });
+
+            this.completedSegments.push(newSegment);
+            this.updateUIs();
+        } else {
+            console.warn(`[Conversation] No transcription result for stream ${streamId}`);
+        }
     }
 
-    calculateAverageConfidence(chunks) {
-        const confidences = chunks.filter(c => c.confidence).map(c => c.confidence);
-        if (confidences.length === 0) return 0;
-        return confidences.reduce((sum, conf) => sum + conf, 0) / confidences.length;
+    concatenateAudioChunks(chunks) {
+        const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const result = new Float32Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+            result.set(chunk, offset);
+            offset += chunk.length;
+        }
+        return result;
     }
 
-    getCompletedSegments() {
-        return this.completedSegments;
+    calculateAverageConfidence(segments) {
+        if (!segments || segments.length === 0) return 0;
+        const totalConfidence = segments.reduce((sum, s) => sum + Math.exp(s.avg_logprob), 0);
+        return totalConfidence / segments.length;
     }
 
-    clearOldSegments() {
-        this.completedSegments = [];
-        this.speakerBuffers.clear();
+    updateUIs() {
+        // Send status to popup
+        chrome.runtime.sendMessage({
+            type: 'statusUpdate',
+            status: {
+                isCapturing: true, // If we're processing, we must be capturing
+                transcriptionCount: this.completedSegments.length,
+                activeSpeakers: this.speakerBuffers.size,
+                sessionCost: this.sessionCost,
+            }
+        }).catch(e => {}); // Ignore errors if popup is closed
+
+        // Send latest segment to content script for display
+        const latestSegment = this.completedSegments[this.completedSegments.length - 1];
+        if (latestSegment && latestSegment.text) {
+            console.log(`[Conversation] Sending segment to UI: "${latestSegment.text.substring(0, 50)}..."`);
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                if (tabs[0]) {
+                    chrome.tabs.sendMessage(tabs[0].id, {
+                        type: 'processedTranscription',
+                        segment: latestSegment
+                    }).catch(e => {
+                        console.warn('[Conversation] Failed to send segment to content script:', e);
+                    });
+                }
+            });
+        } else {
+            console.log('[Conversation] No valid segment to send to UI');
+        }
+    }
+
+    calculateSessionCost() {
+        const costPerMinute = 0.006;
+        const minutesProcessed = this.totalProcessedDuration / 60;
+        return minutesProcessed * costPerMinute;
     }
 } 

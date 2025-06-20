@@ -2,7 +2,7 @@
  * @file api.js
  * @path src/api.js
  * @description Handles all API interactions with OpenAI, including rate limiting and audio processing.
- * @modified 2024-07-26
+ * @modified 2024-07-27
  */
 
 import { getApiKey } from './storage.js';
@@ -121,20 +121,28 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
  * @param {string} streamId - The ID of the audio stream.
  * @returns {Promise<object|null>} - The transcription result or null on failure.
  */
-export async function processAudioChunk(audioData, streamId) {
-    const apiKey = await getApiKey();
+export async function processAudioChunk(audioData, streamId, apiKey) {
     if (!apiKey) {
-        console.error('API key not found. Please set it in the options.');
+        console.error('API key not provided. Please set it in the options.');
         // Notify popup of error
         chrome.runtime.sendMessage({ type: 'error', message: 'API key not found.' });
         return null;
     }
 
-    // Simple audio validation
+    // Enhanced audio validation
     if (!audioData || audioData.length < 1600) { // at least 0.1s of audio
         console.warn(`Skipping empty or very short audio chunk for stream ${streamId}.`);
         return null;
     }
+
+    // Check if audio has any meaningful content (not just silence)
+    const audioLevel = Math.sqrt(audioData.reduce((sum, sample) => sum + sample * sample, 0) / audioData.length);
+    if (audioLevel < 0.01) { // Very low audio level threshold
+        console.warn(`Skipping very quiet audio chunk for stream ${streamId} (level: ${audioLevel.toFixed(4)})`);
+        return null;
+    }
+
+    console.log(`[API] Processing audio for stream ${streamId}: ${audioData.length} samples, level: ${audioLevel.toFixed(4)}`);
 
     const wavBuffer = float32ToWav(audioData);
     const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
@@ -167,7 +175,19 @@ export async function processAudioChunk(audioData, streamId) {
 
     try {
         const result = await queueRequest(() => retryWithBackoff(apiCall));
-        return result;
+        const durationInSeconds = audioData.length / 16000; // Assuming 16kHz sample rate
+        
+        console.log(`[API] Whisper result for stream ${streamId}:`, {
+            text: result.text,
+            language: result.language,
+            duration: result.duration,
+            segments: result.segments?.length || 0
+        });
+        
+        return {
+            transcription: result,
+            duration: durationInSeconds
+        };
     } catch (error) {
         console.error(`Failed to process audio for stream ${streamId} after multiple retries.`, error);
         return null;

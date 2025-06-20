@@ -177,7 +177,7 @@ class VTFAudioProcessor extends AudioWorkletProcessor {
       // Send chunk and VAD result back to the main thread
       this.port.postMessage({
         type: 'audioData',
-        chunk: chunk,
+        audioData: chunk,
         vadResult: vadResult,
         timestamp: Date.now()
       });

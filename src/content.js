@@ -10,29 +10,64 @@
 
 console.log('VTF Audio Extension: Content script loaded at', new Date().toISOString());
 
-// --- FIX: Use postMessage to avoid CSP violations ---
-// Listen for requests from the injected script for the Worklet URL
+// --- FIX: Consolidated message listener ---
 window.addEventListener('message', (event) => {
-  // Basic validation to ensure the message is from our injected script
-  if (event.source !== window || !event.data || event.data.type !== 'VTF_REQUEST_WORKLET_URL') {
+  // Basic validation for all incoming messages
+  if (event.source !== window || !event.data || !event.data.type) {
     return;
   }
+  
+  const { data } = event;
 
-  try {
-    console.log('[Content] Received worklet URL request from inject.js');
-    const workletURL = chrome.runtime.getURL('vtf-audio-processor.js');
-    
-    // Send the URL back to the injected script in a response message
-    window.postMessage({
-      type: 'VTF_WORKLET_URL_RESPONSE',
-      url: workletURL
-    }, window.location.origin);
-
-  } catch (error) {
-    // This could happen if the extension context is invalidated during the process
-    console.error('[Content] Error getting or sending worklet URL:', error);
+  // Route message based on its type
+  switch (data.type) {
+    case 'VTF_REQUEST_WORKLET_URL':
+      handleWorkletUrlRequest();
+      break;
+    case 'VTF_AUDIO_DATA':
+      handleAudioData(data);
+      break;
+    // Add other message types here if needed in the future
   }
 });
+
+function handleWorkletUrlRequest() {
+  try {
+    const workletUrl = chrome.runtime.getURL('vtf-audio-processor.js');
+    window.postMessage({ type: 'VTF_WORKLET_URL', url: workletUrl }, '*');
+  } catch (error) {
+    console.error('[Content] Error getting or sending worklet URL:', error);
+    if (error.message.includes('Extension context invalidated')) {
+      showRefreshNotification();
+    }
+  }
+}
+
+function handleAudioData(data) {
+  try {
+    if (!validateMessage(data, 'VTF_AUDIO_DATA')) {
+      return; // Validation failed, don't proceed
+    }
+
+    // Send audio data to background script
+    chrome.runtime.sendMessage({
+      type: 'audioData',
+      audioData: data.audioData,
+      streamId: data.streamId,
+      timestamp: data.timestamp
+    }).catch(error => {
+      console.error('[Content] Failed to send audio data to background:', error);
+      if (error.message.includes('Extension context invalidated')) {
+        showRefreshNotification();
+      }
+    });
+  } catch (error) {
+    console.error('[Content] Error handling audio data:', error);
+    if (error.message.includes('Extension context invalidated')) {
+      showRefreshNotification();
+    }
+  }
+}
 // --- END FIX ---
 
 // Inject the main page-context script
@@ -56,110 +91,48 @@ let contextInvalidated = false;
 
 // Message validation function
 function validateMessage(data, expectedType) {
-  if (!data || typeof data !== 'object') {
-    throw new Error('Invalid message format');
-  }
-  
-  if (data.type !== expectedType) {
-    throw new Error(`Expected message type ${expectedType}, got ${data.type}`);
-  }
-  
-  // Type-specific validation
-  switch (expectedType) {
-    case 'VTF_AUDIO_DATA':
-      if (!Array.isArray(data.audioData) || !data.streamId || !data.timestamp) {
-        throw new Error('Invalid audio data format');
-      }
-      if (data.audioData.length === 0) {
-        throw new Error('Empty audio data');
-      }
-      break;
-    case 'processedTranscription':
-      if (!data.segment || !data.segment.text) {
-        throw new Error('Invalid segment format');
-      }
-      break;
-  }
-  
-  return true;
-}
+    if (!data || typeof data !== 'object') {
+        console.warn('[Content] Invalid message: not an object', data);
+        return false;
+    }
 
-// Listen for audio data from inject script
-function handleAudioMessage(event) {
-  // Only accept messages from the same window and origin
-  if (event.source !== window) return;
-  if (event.origin !== window.location.origin) return;
-  
-  if (contextInvalidated) return;
-  
-  if (event.data && event.data.type === 'VTF_AUDIO_DATA') {
-    try {
-      validateMessage(event.data, 'VTF_AUDIO_DATA');
-    } catch (error) {
-      console.warn('[Content] Invalid audio message:', error.message);
-      return;
+    if (data.type !== expectedType) {
+        console.warn(`[Content] Invalid message type: expected ${expectedType}, got ${data.type}`, data);
+        return false;
     }
-    
-    if (DEBUG_CAPTURE && event.data.vadResult) {
-      const vadInfo = event.data.vadResult;
-      const f = vadInfo.features;
-      console.debug(`[Content] VAD: voice=${vadInfo.isVoice}, prob=${vadInfo.probability.toFixed(3)}, quality=${vadInfo.quality}, SNR=${f.snr.toFixed(2)}`);
-    }
-    
-    chunksSent++;
-    
-    // Skip non-voice chunks with low confidence
-    if (event.data.vadResult) {
-      const vad = event.data.vadResult;
-      if (!vad.isVoice && vad.probability < 0.3) {
-        if (DEBUG_CAPTURE) {
-          console.debug(`[Content] Skipping non-voice chunk from ${event.data.streamId}`);
-        }
-        return;
-      }
-    }
-    
-    try {
-      // Send to background script with VAD data
-      chrome.runtime.sendMessage({
-        type: 'audioData',
-        audioData: event.data.audioData,
-        timestamp: event.data.timestamp,
-        streamId: event.data.streamId,
-        chunkNumber: chunksSent,
-        vadResult: event.data.vadResult,
-        channelInfo: event.data.channelInfo,
-        // Legacy compatibility
-        isSilent: event.data.isSilent,
-        audioQuality: event.data.audioQuality
-      }, response => {
-        if (chrome.runtime.lastError) {
-          const msg = chrome.runtime.lastError.message || '';
-          if (msg.includes('context invalidated')) {
-            if (!contextInvalidated) {
-              console.warn('[Content] Extension context invalidated');
-              showReloadNotification();
-              disableCaptureDueToInvalidContext();
-            }
-            contextInvalidated = true;
-          } else if (!msg.includes('receivers')) {
-            console.error('[Content] Error sending audio data:', chrome.runtime.lastError);
-          }
-        }
-      });
-    } catch (error) {
-      console.error('[Content] Failed to send message:', error);
-      if (error.message.includes('context invalidated')) {
-        showReloadNotification();
-      }
-    }
-  }
-}
 
-window.addEventListener('message', handleAudioMessage);
+    // Suppress noisy validation logging
+    // console.log('[Content-Debug] Validating VTF_AUDIO_DATA. Received data:', data);
+
+    if (expectedType === 'VTF_AUDIO_DATA') {
+        const isAudioArray = Array.isArray(data.audioData) && data.audioData.length > 0;
+        const hasStreamId = typeof data.streamId === 'string' && data.streamId.length > 0;
+        const hasTimestamp = typeof data.timestamp === 'number' && data.timestamp > 0;
+
+        // Suppress noisy validation logging
+        // console.log('[Content-Debug] Validation Checks: isAudioArray=' + isAudioArray + ', hasStreamId=' + hasStreamId + ', hasTimestamp=' + hasTimestamp);
+
+        if (!isAudioArray) {
+            console.warn('[Content] Invalid audio data: not an array or empty', data);
+            return false;
+        }
+
+        if (!hasStreamId) {
+            console.warn('[Content] Invalid audio data: missing or invalid streamId', data);
+            return false;
+        }
+
+        if (!hasTimestamp) {
+            console.warn('[Content] Invalid audio data: missing or invalid timestamp', data);
+            return false;
+        }
+    }
+
+    return true;
+}
 
 function disableCaptureDueToInvalidContext() {
-  window.removeEventListener('message', handleAudioMessage);
+  window.removeEventListener('message', handleAudioData);
   window.postMessage({ type: 'VTF_STOP_CAPTURE' }, '*');
 }
 
@@ -239,9 +212,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     
     if (request.type === 'processedTranscription') {
-      console.log(`[Content] Processed segment received: "${request.segment.text.substring(0, 50)}..."`);
-      processedSegments.push(request.segment);
-      displayProcessedSegment(request.segment);
+      if (request.segment && request.segment.text) {
+        console.log(`[Content] Processed segment received: "${request.segment.text.substring(0, 50)}..."`);
+        processedSegments.push(request.segment);
+        displayProcessedSegment(request.segment);
+      } else {
+        console.warn('[Content] Received processedTranscription message but segment or text is missing:', request);
+      }
       sendResponse({received: true});
       return false;
     }
@@ -471,9 +448,20 @@ function createTranscriptionDisplay() {
   const clearBtn = document.getElementById('vtf-clear-btn');
   if (clearBtn) {
     clearBtn.onclick = () => {
-      processedSegments = [];
-      content.innerHTML = '';
-      document.getElementById('vtf-segment-count').textContent = '0';
+      // Clear all displayed segments
+      const content = document.getElementById('vtf-transcription-content');
+      if (content) {
+        content.innerHTML = '';
+        processedSegments = [];
+        
+        // Update count
+        const countElement = document.getElementById('vtf-segment-count');
+        if (countElement) {
+          countElement.textContent = '0';
+        }
+        
+        showNotification('Transcription display cleared', 'success');
+      }
     };
   }
   
@@ -500,8 +488,9 @@ function displayProcessedSegment(segment) {
   const segmentElement = document.createElement('div');
   segmentElement.className = 'vtf-segment';
   
-  const startTime = new Date(segment.startTime);
-  const endTime = new Date(segment.endTime || segment.startTime);
+  // Fix: Use timestamp instead of startTime, and handle Invalid Date
+  const timestamp = segment.timestamp || segment.startTime || Date.now();
+  const startTime = new Date(timestamp);
   const duration = segment.duration ? `${segment.duration.toFixed(1)}s` : '';
   
   // Confidence styling
@@ -515,14 +504,17 @@ function displayProcessedSegment(segment) {
     confidenceText = 'Medium';
   }
   
+  // Format time safely
+  const timeString = isNaN(startTime.getTime()) ? 'Unknown Time' : startTime.toLocaleTimeString();
+  
   segmentElement.innerHTML = `
     <div class="vtf-segment-header">
       <div class="vtf-speaker-info">
-        <span class="vtf-speaker-name">${segment.speaker}</span>
-        <span class="vtf-topic-badge">${segment.topic}</span>
+        <span class="vtf-speaker-name">${segment.speaker || 'Unknown Speaker'}</span>
+        <span class="vtf-topic-badge">Trading</span>
       </div>
       <div class="vtf-segment-meta">
-        <span>${startTime.toLocaleTimeString()}</span>
+        <span>${timeString}</span>
         ${duration ? `<span>${duration}</span>` : ''}
         <span class="${confidenceClass}">${confidenceText}</span>
       </div>
@@ -772,3 +764,48 @@ window.addEventListener('load', () => {
 });
 
 console.log('VTF Audio Extension: Ready for transcription display');
+
+function showRefreshNotification() {
+  // Only show once
+  if (window.vtfRefreshNotificationShown) return;
+  window.vtfRefreshNotificationShown = true;
+  
+  const notification = document.createElement('div');
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #ef4444;
+    color: white;
+    padding: 16px 20px;
+    border-radius: 8px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    z-index: 10001;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    max-width: 300px;
+  `;
+  
+  notification.innerHTML = `
+    <div style="font-weight: 600; margin-bottom: 8px;">VTF Transcriber Extension</div>
+    <div style="margin-bottom: 12px;">Extension was reloaded. Please refresh this page to resume transcription.</div>
+    <button onclick="window.location.reload()" style="
+      background: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    ">Refresh Page</button>
+  `;
+  
+  document.body.appendChild(notification);
+  
+  // Auto-remove after 10 seconds
+  setTimeout(() => {
+    if (notification.parentNode) {
+      notification.parentNode.removeChild(notification);
+    }
+  }, 10000);
+}

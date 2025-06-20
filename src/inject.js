@@ -119,7 +119,7 @@
       }, 5000); // 5-second timeout for a response.
 
       const handleMessage = (event) => {
-        if (event.source === window && event.data && event.data.type === 'VTF_WORKLET_URL_RESPONSE') {
+        if (event.source === window && event.data && event.data.type === 'VTF_WORKLET_URL') {
           console.log('[VTF Inject] Received worklet URL from content script.');
           vtfWorkletUrl = event.data.url; // Cache the URL.
           
