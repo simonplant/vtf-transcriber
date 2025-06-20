@@ -22,6 +22,10 @@ let state = {
 let conversationProcessor = null;
 let keepAliveTimer = null;
 let healthCheckInterval = null;
+let currentConversation = null;
+let isAudioWorkletRegistered = false;
+const MAX_DEBUG_EVENTS = 50;
+const debugEvents = [];
 
 // Service worker lifecycle optimization
 const KEEP_ALIVE_INTERVAL = 25000; // 25 seconds (Chrome limit is 30s)
@@ -234,6 +238,20 @@ function handleMessage(message, sender, sendResponse) {
 }
 
 // --- Core Logic ---
+
+/**
+ * Logs a critical event for debugging purposes and stores it in a capped array.
+ * @param {string} event - The name of the event.
+ * @param {object} data - The data associated with the event.
+ */
+function logCriticalEvent(event, data = {}) {
+  const timestamp = new Date().toISOString();
+  console.log(`[VTF] ${event}:`, data);
+  debugEvents.push({ timestamp, event, data });
+  if (debugEvents.length > MAX_DEBUG_EVENTS) {
+    debugEvents.shift(); // Keep the array size fixed
+  }
+}
 
 async function startCapture(apiKey) {
     console.log('[Background] Starting capture session...');

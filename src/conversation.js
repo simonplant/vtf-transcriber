@@ -100,8 +100,8 @@ export class ConversationProcessor {
             this.setState(initialState);
         }
 
-        this.SPEAKER_TIMEOUT_MS = 1500; // End of speech delay (reduced from 3000ms)
-        this.MAX_SEGMENT_DURATION_S = 5; // Max audio length to send to API (reduced from 30s)
+        this.SPEAKER_TIMEOUT_MS = 3000; // End of speech delay (reduced from 3000ms)
+        this.MAX_SEGMENT_DURATION_S = 30; // Max audio length to send to API (reduced from 30s)
         this.cleanupInterval = setInterval(() => this.finalizeCompletedStreams(), this.SPEAKER_TIMEOUT_MS);
     }
 

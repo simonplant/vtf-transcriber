@@ -217,7 +217,6 @@ Real-time Dashboard → Export Generation
 
 #### **Audio Capture Layer** (`inject.js`)
 - **AudioWorklet**: Modern, low-latency audio processing (preferred)
-- **ScriptProcessor**: Fallback for older browsers
 - **VAD Processing**: Real-time voice activity detection with spectral analysis
 - **Quality Assessment**: RMS, dynamic range, and clipping detection
 - **Multi-channel Support**: Handles multiple simultaneous audio streams

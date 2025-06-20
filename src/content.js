@@ -1029,3 +1029,20 @@ function showRefreshNotification() {
     }
   }, 10000);
 }
+
+// Ensure AudioWorklet processor is registered only once
+if (!window.vtfAudioWorkletRegistered) {
+    chrome.runtime.sendMessage({ type: 'registerAudioWorklet' }).then(() => {
+        window.vtfAudioWorkletRegistered = true;
+    });
+}
+
+// Audio Safety Net: Periodically check for any audio elements that might have been missed.
+setInterval(() => {
+  document.querySelectorAll('audio[id^="msRemAudio-"]').forEach(audio => {
+    if (!activeProcessors.has(audio.id) && audio.srcObject) {
+      console.log(`[VTF Safety Net] Found uncaptured audio source: ${audio.id}. Attempting to capture.`);
+      captureAudioElement(audio);
+    }
+  });
+}, 2000);

@@ -209,9 +209,15 @@
       // Ensure AudioWorklet is loaded
       const workletSuccess = await ensureAudioWorkletLoaded();
       
+      if (!workletSuccess) {
+        console.error('[VTF Inject] AudioWorklet is required. This browser is not supported.');
+        showNotification('Your browser does not support AudioWorklet. Please use a modern Chrome browser.', 'error');
+        pendingProcessors.delete(elementId); // Release lock
+        return; // Exit early - don't attempt capture
+      }
+
       // Create audio source
       const source = audioContext.createMediaStreamSource(mediaStream);
-      let processor;
       
       // Create channel info
       const channelInfo = {
@@ -226,115 +232,79 @@
       // Store producer channel mapping
       producerChannels.set(producerId, channelInfo);
       
-      if (workletSuccess) {
-        // Use modern AudioWorklet
-        processor = new AudioWorkletNode(audioContext, 'vtf-audio-processor');
+      // Create AudioWorklet (the only path)
+      const processor = new AudioWorkletNode(audioContext, 'vtf-audio-processor');
         
-        // Configure worklet with proper settings
-        processor.port.postMessage({
-          type: 'configure',
-          chunkSize: 16000, // 1 second chunks at 16kHz
-          vadConfig: {
-            energyThreshold: 0.003,
-            zcrThreshold: 0.4,
-            spectralCentroidThreshold: 1000,
-            spectralRolloffThreshold: 2000,
-            voiceProbabilityThreshold: 0.5,
-            adaptiveWindow: 20,
-            hangoverFrames: 8
-          }
-        });
+      // Configure worklet with proper settings
+      processor.port.postMessage({
+        type: 'configure',
+        chunkSize: 16000, // 1 second chunks at 16kHz
+        vadConfig: {
+          energyThreshold: 0.003,
+          zcrThreshold: 0.4,
+          spectralCentroidThreshold: 1000,
+          spectralRolloffThreshold: 2000,
+          voiceProbabilityThreshold: 0.5,
+          adaptiveWindow: 20,
+          hangoverFrames: 8
+        }
+      });
         
-        // Listen for VAD results from the worklet
-        processor.port.onmessage = withErrorBoundary((event) => {
-          if (event.data.type === 'audioData') {
-            const { audioData, timestamp, vadResult } = event.data;
+      // Listen for VAD results from the worklet
+      processor.port.onmessage = withErrorBoundary((event) => {
+        if (event.data.type === 'audioData') {
+          const { audioData, timestamp, vadResult } = event.data;
             
-            // Send to content script with channel info
-            window.postMessage({
-              type: 'VTF_AUDIO_DATA',
-              streamId: elementId,
-              audioData: audioData,
-              timestamp: timestamp,
-              vadResult: vadResult,
-              channelInfo: channelInfo,
-              // Legacy compatibility
-              maxSample: vadResult.features.maxSample,
-              audioQuality: vadResult.quality,
-              rms: vadResult.features.rms,
-              isSilent: !vadResult.isVoice
-            }, '*');
-          }
-        }, `worklet message handling for ${elementId}`);
-        
-        console.log(`[VTF Inject] Using AudioWorklet processor for ${elementId}`);
-        
-      } else {
-        // Fallback to ScriptProcessor
-        processor = audioContext.createScriptProcessor(4096, 1, 1);
-        let audioBuffer = [];
-        let chunkCount = 0;
-        const CHUNK_SIZE = 16000; // 1 second at 16kHz
-        
-        processor.onaudioprocess = withErrorBoundary((e) => {
-          const inputData = e.inputBuffer.getChannelData(0);
-          // Efficient array concatenation for ScriptProcessor fallback
-          const oldLength = audioBuffer.length;
-          audioBuffer.length = oldLength + inputData.length;
-          for (let i = 0; i < inputData.length; i++) {
-            audioBuffer[oldLength + i] = inputData[i];
-          }
-          
-          if (audioBuffer.length >= CHUNK_SIZE) {
-            const chunk = audioBuffer.slice(0, CHUNK_SIZE);
-            audioBuffer = audioBuffer.slice(CHUNK_SIZE);
-            chunkCount++;
-            
-            // Quality assessment
-            const qualityInfo = assessAudioQuality(chunk);
-            
-            // Process only chunks with sufficient audio
-            if (qualityInfo.rms > 0.003 || qualityInfo.maxSample > 0.01) {
-              // Send to content script
-              window.postMessage({
-                type: 'VTF_AUDIO_DATA',
-                streamId: elementId,
-                audioData: chunk,
-                timestamp: Date.now(),
-                chunkId: `${elementId}-${chunkCount}`,
-                channelInfo: channelInfo,
-                maxSample: qualityInfo.maxSample,
-                audioQuality: qualityInfo.quality,
-                rms: qualityInfo.rms,
-                isSilent: qualityInfo.rms < 0.003
-              }, '*');
-            }
-          }
-        }, `audio processing for ${elementId}`);
-      }
-      
+          // Assess audio quality before sending
+          const qualityMetrics = assessAudioQuality(audioData);
+
+          window.postMessage({
+            type: 'VTF_AUDIO_DATA',
+            streamId: elementId,
+            audioData: audioData,
+            timestamp: timestamp,
+            vadResult: vadResult,
+            quality: qualityMetrics, // Send quality metrics
+            channelInfo: channelInfo
+          }, '*');
+        } else if (event.data.type === 'stoppedTalking') {
+            // Handle end-of-speech event from the worklet
+            handleStopTalking(elementId);
+        }
+      }, `worklet message handling for ${elementId}`);
+
       // Connect pipeline
       source.connect(processor);
       if (processor.connect) {
+        // This is a subtle but important check. AudioWorkletNodes do not need
+        // to be connected to the destination to function, but doing so can
+        // prevent garbage collection in some browser versions.
         processor.connect(audioContext.destination);
       }
       
-      // Store for cleanup
+      // Store the active processor
       activeProcessors.set(elementId, {
-        source: source,
-        processor: processor,
-        trackId: trackId,
-        producerId: producerId,
+        source, 
+        processor, 
+        startTime: Date.now(), 
         channelInfo: channelInfo,
-        startTime: Date.now()
+        lastActivity: Date.now()
       });
+
+      // Remove the lock
+      pendingProcessors.delete(elementId);
+
+      // Cancel any pending cleanup for this stream
+      if (cleanupTimeouts.has(elementId)) {
+        clearTimeout(cleanupTimeouts.get(elementId));
+        cleanupTimeouts.delete(elementId);
+      }
       
-      console.log(`[VTF Inject] Audio pipeline connected for element ${elementId}`);
-      
+      console.log(`[VTF Inject] Successfully started capture for ${elementId}`);
+
     } catch (error) {
-      console.error(`[VTF Inject] Error setting up capture for ${elementId}:`, error);
-    } finally {
-      pendingProcessors.delete(elementId); // Remove lock
+      console.error(`[VTF Inject] Error capturing element ${elementId}:`, error);
+      pendingProcessors.delete(elementId); // Release lock on error
     }
   }
   

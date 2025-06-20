@@ -116,7 +116,7 @@
 
 ### Browser Compatibility
 - [ ] **Chrome 88+** (minimum version)
-- [ ] **AudioWorklet support** vs ScriptProcessor fallback
+- [ ] **AudioWorklet support:** Verify that audio is captured correctly via the AudioWorklet.
 - [ ] **Extension reload** scenarios
 - [ ] **Page refresh** during capture
 
