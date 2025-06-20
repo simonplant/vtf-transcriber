@@ -81,17 +81,17 @@
     };
   }
   
-  // Enhanced audio quality assessment with reasonable thresholds
+  // Enhanced audio quality assessment with optimized thresholds for DP + others
   function assessAudioQuality(audioData) {
     const rms = Math.sqrt(audioData.reduce((sum, val) => sum + val * val, 0) / audioData.length);
     const maxSample = Math.max(...audioData.map(Math.abs));
     const dynamicRange = maxSample / (rms || 0.0001);
     
     let quality = 'poor';
-    // Reasonable thresholds for speech
-    if (rms > 0.005 && dynamicRange > 2) {
+    // Optimized thresholds for DP + others
+    if (rms > 0.003 && maxSample < 0.9) { // Safe for Rick's volume
       quality = 'good';
-    } else if (rms > 0.002 || dynamicRange > 1.5) {
+    } else if (rms > 0.001 || dynamicRange > 1.5) {
       quality = 'fair';  
     }
     
@@ -235,18 +235,21 @@
       // Create AudioWorklet (the only path)
       const processor = new AudioWorkletNode(audioContext, 'vtf-audio-processor');
         
-      // Configure worklet with proper settings
+      // Configure worklet with optimized settings for DP + others
       processor.port.postMessage({
         type: 'configure',
         chunkSize: 16000, // 1 second chunks at 16kHz
         vadConfig: {
-          energyThreshold: 0.003,
+          energyThreshold: 0.0015,          // Low threshold to catch DP at distance
           zcrThreshold: 0.4,
           spectralCentroidThreshold: 1000,
           spectralRolloffThreshold: 2000,
-          voiceProbabilityThreshold: 0.5,
+          voiceProbabilityThreshold: 0.45,  // Forgiving for DP's distance
           adaptiveWindow: 20,
-          hangoverFrames: 8
+          hangoverFrames: 10,               // Increased for better continuity
+          minSpeechDuration: 0.2,           // Catches "FLAT!" but ignores clicks
+          spectralFluxThreshold: 0.1,       // For speech/music discrimination
+          preEmphasisCoeff: 0.97            // Pre-emphasis coefficient
         }
       });
         

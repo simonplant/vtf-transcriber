@@ -58,7 +58,7 @@ export async function initState() {
 
 // --- Transcription Management with Size Limits ---
 
-const MAX_TRANSCRIPTIONS = 1000; // Limit to prevent quota issues
+const MAX_TRANSCRIPTIONS = 500; // Reduced from 1000 to prevent memory issues
 const MAX_STORAGE_SIZE_MB = 50; // Chrome extension quota limit consideration
 
 /**
@@ -71,8 +71,8 @@ export async function addTranscription(transcription) {
     
     // Implement rotation to prevent unbounded growth
     if (transcriptions.length > MAX_TRANSCRIPTIONS) {
-        // Remove oldest 10% when limit exceeded
-        const removeCount = Math.floor(MAX_TRANSCRIPTIONS * 0.1);
+        // Remove oldest 20% when limit exceeded (increased from 10%)
+        const removeCount = Math.floor(MAX_TRANSCRIPTIONS * 0.2);
         transcriptions.splice(0, removeCount);
         console.log(`[Storage] Rotated ${removeCount} old transcriptions to manage storage`);
     }

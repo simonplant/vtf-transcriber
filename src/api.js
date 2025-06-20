@@ -113,7 +113,7 @@ function float32ToWav(float32Array, sampleRate = 16000) {
  * @param {number} baseDelay - Initial delay in ms.
  * @returns {Promise<any>}
  */
-async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
+async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 300) {
     let attempt = 1;
     while (attempt <= maxRetries) {
         try {
@@ -160,7 +160,7 @@ export async function processAudioChunk(audioData, streamId, apiKey) {
     }
 
     // Convert to WAV format
-    const wavBuffer = convertToWav(audioData, 16000);
+    const wavBuffer = float32ToWav(audioData, 16000);
     const fileSizeMB = wavBuffer.byteLength / (1024 * 1024);
     
     // Validate file size BEFORE sending to API
@@ -218,4 +218,4 @@ export async function processAudioChunk(audioData, streamId, apiKey) {
         console.error(`Failed to process audio for stream ${streamId} after multiple retries.`, error);
         return null;
     }
-} 
+}

@@ -100,9 +100,9 @@ export class ConversationProcessor {
             this.setState(initialState);
         }
 
-        this.SPEAKER_TIMEOUT_MS = 1500; // Reduced from 3000ms for faster processing
-        this.MAX_SEGMENT_DURATION_S = 20; // Reduced from 30s for more frequent processing
-        this.MAX_SILENCE_BEFORE_FORCE = 10000; // Force process after 10s of silence
+        this.SPEAKER_TIMEOUT_MS = 2500; // 2.5 seconds - balanced for everyone
+        this.MAX_SEGMENT_DURATION_S = 30; // DP can go long, but processes Rick/Kira quickly
+        this.MAX_SILENCE_BEFORE_FORCE = 15000; // Force process after 15s of silence
         this.cleanupInterval = setInterval(() => this.finalizeCompletedStreams(), this.SPEAKER_TIMEOUT_MS);
     }
 

@@ -29,7 +29,7 @@ const debugEvents = [];
 
 // Service worker lifecycle optimization
 const KEEP_ALIVE_INTERVAL = 25000; // 25 seconds (Chrome limit is 30s)
-const HEALTH_CHECK_INTERVAL = 60000; // 1 minute
+const HEALTH_CHECK_INTERVAL = 30000; // Reduced from 60s to 30s to match content script
 const MAX_IDLE_TIME = 300000; // 5 minutes
 
 // Keep service worker alive during active sessions
@@ -447,29 +447,19 @@ async function attemptSystemRecovery() {
 }
 
 // Enhanced error handling with retry logic
-async function handleOperationWithRetry(operation, maxRetries = 3, backoffMs = 1000) {
-    let lastError;
-    
+async function handleOperationWithRetry(operation, maxRetries = 3, backoffMs = 300) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const result = await operation();
-            if (attempt > 1) {
-                console.log(`[Background] Operation succeeded on attempt ${attempt}`);
-            }
-            return result;
+            return await operation();
         } catch (error) {
-            lastError = error;
-            console.warn(`[Background] Operation failed on attempt ${attempt}:`, error);
-            
-            if (attempt < maxRetries) {
-                const delay = backoffMs * Math.pow(2, attempt - 1); // Exponential backoff
-                console.log(`[Background] Retrying in ${delay}ms...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
+            if (attempt === maxRetries) {
+                throw error;
             }
+            const delay = backoffMs * Math.pow(2, attempt - 1); // Exponential backoff
+            console.log(`[Background] Operation failed, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, delay));
         }
     }
-    
-    throw lastError;
 }
 
 // Notification helper for user feedback
