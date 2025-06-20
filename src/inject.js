@@ -16,8 +16,10 @@
   
   let audioContext = null;
   let activeProcessors = new Map();
+  let pendingProcessors = new Set(); // Prevent race conditions during setup
   let capturePaused = false;
   let workletLoaded = false;
+  let vtfWorkletUrl = null; // Cache the worklet URL once received
   let producerChannels = new Map(); // Map producer IDs to channel info
   let cleanupTimeouts = new Map(); // Debounced cleanup for stream switches
   
@@ -45,6 +47,7 @@
         }
       });
       activeProcessors.clear();
+      pendingProcessors.clear(); // Also clear pending processors
       
       // Close audio context
       if (audioContext && audioContext.state !== 'closed') {
@@ -100,6 +103,40 @@
     };
   }
   
+  /**
+   * Securely requests the AudioWorklet URL from the content script via postMessage.
+   * This avoids CSP violations and caches the URL for subsequent requests.
+   * @returns {Promise<string>} A promise that resolves with the worklet URL.
+   */
+  function getWorkletUrl() {
+    // Return the cached URL if we already have it.
+    if (vtfWorkletUrl) return Promise.resolve(vtfWorkletUrl);
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', handleMessage);
+        reject(new Error('Timeout: Did not receive worklet URL from content script.'));
+      }, 5000); // 5-second timeout for a response.
+
+      const handleMessage = (event) => {
+        if (event.source === window && event.data && event.data.type === 'VTF_WORKLET_URL_RESPONSE') {
+          console.log('[VTF Inject] Received worklet URL from content script.');
+          vtfWorkletUrl = event.data.url; // Cache the URL.
+          
+          clearTimeout(timeout);
+          window.removeEventListener('message', handleMessage);
+          resolve(vtfWorkletUrl);
+        }
+      };
+
+      window.addEventListener('message', handleMessage);
+
+      // Request the URL from the content script.
+      console.log('[VTF Inject] Requesting worklet URL from content script...');
+      window.postMessage({ type: 'VTF_REQUEST_WORKLET_URL' }, window.location.origin);
+    });
+  }
+
   // Reliably initialize AudioWorklet with proper VAD for VTF
   async function ensureAudioWorkletLoaded() {
     if (workletLoaded) return true;
@@ -108,206 +145,23 @@
       if (!audioContext.audioWorklet) {
         throw new Error('AudioWorklet not supported by this browser');
       }
+
+      // --- FIX: Asynchronously request the URL from the content script ---
+      const workletURL = await getWorkletUrl();
       
-      console.log('[VTF Inject] Loading enhanced AudioWorklet module...');
-      await audioContext.audioWorklet.addModule(URL.createObjectURL(new Blob([`
-        // Enhanced AudioWorklet Processor for VTF with proper thresholds
-        class VTFAudioProcessor extends AudioWorkletProcessor {
-          constructor() {
-            super();
-            this.audioBuffer = [];
-            this.chunkSize = 16000; // 1 second at 16kHz for better context
-            
-            // Proper VAD parameters for speech detection
-            this.vadConfig = {
-              energyThreshold: 0.003,          // Reasonable threshold for speech
-              zcrThreshold: 0.4,               // Good for speech detection
-              spectralCentroidThreshold: 1000, // Speech frequency range
-              spectralRolloffThreshold: 2000,  // Speech frequency range  
-              voiceProbabilityThreshold: 0.5,  // Balanced threshold
-              adaptiveWindow: 20,              // Reasonable adaptation
-              hangoverFrames: 8                // Smooth detection
-            };
-            
-            // Adaptive thresholding
-            this.energyHistory = [];
-            this.noiseFloor = 0.002;     // Reasonable noise floor
-            this.snrHistory = [];
-            this.initialized = false;
-            
-            // Voice activity state
-            this.voiceActivity = false;
-            this.hangoverCounter = 0;
-            this.consecutiveSilentChunks = 0;
-            this.chunkCount = 0;
-            
-            // Spectral analysis setup
-            this.sampleRate = 16000;
-            this.fftSize = 256;
-            
-            // Listen for configuration updates
-            this.port.onmessage = (event) => {
-              if (event.data.type === 'configure') {
-                this.chunkSize = event.data.chunkSize || 16000;
-                Object.assign(this.vadConfig, event.data.vadConfig || {});
-              }
-            };
-          }
-          
-          calculateZCR(audioData) {
-            let crossings = 0;
-            for (let i = 1; i < audioData.length; i++) {
-              if ((audioData[i] >= 0) !== (audioData[i - 1] >= 0)) {
-                crossings++;
-              }
-            }
-            return crossings / (audioData.length - 1);
-          }
-          
-          // Simplified spectral analysis for performance
-          calculateSpectralFeatures(audioData) {
-            const N = Math.min(audioData.length, this.fftSize);
-            let totalEnergy = 0;
-            let weightedSum = 0;
-            
-            // Simple energy-based spectral centroid calculation
-            for (let i = 0; i < N; i++) {
-              const energy = audioData[i] * audioData[i];
-              totalEnergy += energy;
-              weightedSum += i * energy;
-            }
-            
-            const centroid = totalEnergy > 0 ? (weightedSum / totalEnergy) * (this.sampleRate / 2 / N) : 0;
-            
-            return { centroid, rolloff: centroid * 1.5 };
-          }
-          
-          // Proper VAD with reasonable thresholds
-          performVAD(audioData) {
-            const rms = Math.sqrt(audioData.reduce((sum, val) => sum + val * val, 0) / audioData.length);
-            const maxSample = Math.max(...audioData.map(Math.abs));
-            
-            // Update energy history
-            this.energyHistory.push(rms);
-            if (this.energyHistory.length > this.vadConfig.adaptiveWindow) {
-              this.energyHistory.shift();
-            }
-            
-            // Initialize noise floor
-            if (!this.initialized && this.energyHistory.length >= 5) {
-              const sortedEnergy = [...this.energyHistory].sort((a, b) => a - b);
-              this.noiseFloor = Math.max(0.001, sortedEnergy[0] * 1.5); // Reasonable noise floor
-              this.initialized = true;
-            }
-            
-            const zcr = this.calculateZCR(audioData);
-            const spectralFeatures = this.calculateSpectralFeatures(audioData);
-            const snr = this.noiseFloor > 0 ? 20 * Math.log10(rms / this.noiseFloor) : 0;
-            
-            this.snrHistory.push(snr);
-            if (this.snrHistory.length > 5) this.snrHistory.shift();
-            const avgSNR = this.snrHistory.reduce((a, b) => a + b, 0) / this.snrHistory.length;
-            
-            // Multi-feature voice activity decision
-            let voiceProbability = 0;
-            
-            // Energy criterion
-            if (rms > this.vadConfig.energyThreshold) voiceProbability += 0.3;
-            if (rms > this.vadConfig.energyThreshold * 2) voiceProbability += 0.2;
-            
-            // ZCR criterion (voice typically has lower ZCR)
-            if (zcr < this.vadConfig.zcrThreshold) voiceProbability += 0.2;
-            
-            // Spectral features
-            if (spectralFeatures.centroid > this.vadConfig.spectralCentroidThreshold) voiceProbability += 0.15;
-            
-            // SNR criterion
-            if (avgSNR > 6) voiceProbability += 0.15; // Reasonable SNR threshold
-            
-            // Dynamic range check
-            const dynamicRange = maxSample / (rms || 0.0001);
-            if (dynamicRange > 2) voiceProbability += 0.1;
-            
-            // Decision logic with hangover
-            const isVoiceCandidate = voiceProbability >= this.vadConfig.voiceProbabilityThreshold;
-            
-            if (isVoiceCandidate) {
-              this.voiceActivity = true;
-              this.hangoverCounter = this.vadConfig.hangoverFrames;
-            } else {
-              if (this.hangoverCounter > 0) {
-                this.hangoverCounter--;
-                this.voiceActivity = true;
-              } else {
-                this.voiceActivity = false;
-              }
-            }
-            
-            // Quality assessment
-            let quality = 'poor';
-            if (rms > 0.005 && maxSample < 0.95) {
-              quality = avgSNR > 10 ? 'good' : 'fair';
-            } else if (rms > 0.002) {
-              quality = 'fair';
-            }
-            
-            return {
-              isVoice: this.voiceActivity,
-              probability: voiceProbability,
-              quality: quality,
-              features: {
-                rms: rms,
-                maxSample: maxSample,
-                zcr: zcr,
-                spectralCentroid: spectralFeatures.centroid,
-                spectralRolloff: spectralFeatures.rolloff,
-                snr: avgSNR
-              }
-            };
-          }
-          
-          process(inputs, outputs, parameters) {
-            const input = inputs[0];
-            if (input.length > 0) {
-              const audioData = input[0];
-              // Efficient array concatenation instead of spread operator
-              const oldLength = this.audioBuffer.length;
-              this.audioBuffer.length = oldLength + audioData.length;
-              for (let i = 0; i < audioData.length; i++) {
-                this.audioBuffer[oldLength + i] = audioData[i];
-              }
-              
-              while (this.audioBuffer.length >= this.chunkSize) {
-                const chunk = this.audioBuffer.slice(0, this.chunkSize);
-                this.audioBuffer = this.audioBuffer.slice(this.chunkSize);
-                this.chunkCount++;
-                
-                const vadResult = this.performVAD(chunk);
-                
-                // Only send chunks with voice activity or reasonable energy
-                if (vadResult.isVoice || vadResult.features.rms > 0.002) {
-                  this.port.postMessage({
-                    type: 'audioData',
-                    audioData: chunk,
-                    timestamp: Date.now(),
-                    vadResult: vadResult
-                  });
-                }
-              }
-            }
-            
-            return true;
-          }
-        }
-        
-        registerProcessor('vtf-audio-processor', VTFAudioProcessor);
-      `], { type: 'application/javascript' })));
+      if (!workletURL) {
+          throw new Error('Failed to get the worklet URL from the content script.');
+      }
+      
+      console.log('[VTF Inject] Loading enhanced AudioWorklet module from:', workletURL);
+      await audioContext.audioWorklet.addModule(workletURL);
       
       workletLoaded = true;
-      console.log('[VTF Inject] Enhanced AudioWorklet module loaded successfully');
+      console.log('[VTF Inject] AudioWorklet module loaded successfully');
       return true;
       
     } catch (error) {
+      // This is where the error was previously happening.
       console.error('[VTF Inject] Failed to load AudioWorklet:', error);
       workletLoaded = false;
       return false;
@@ -323,13 +177,12 @@
     // Extract stream and track information
     const mediaStream = audioElement.srcObject;
     if (!mediaStream || !mediaStream.getAudioTracks || mediaStream.getAudioTracks().length === 0) {
-      console.log(`[VTF Inject] No audio tracks found for: ${elementId}`);
+      // This is not an error, the stream might not be ready yet.
       return;
     }
     
-    // Check if we already have a processor for this element
-    if (activeProcessors.has(elementId)) {
-      console.log(`[VTF Inject] Already have processor for element: ${elementId}`);
+    // Check if we already have a processor or one is being set up
+    if (activeProcessors.has(elementId) || pendingProcessors.has(elementId)) {
       return;
     }
     
@@ -340,6 +193,8 @@
     console.log(`[VTF Inject] Starting capture for element: ${elementId} (track: ${trackId})`);
     
     try {
+      pendingProcessors.add(elementId); // Add lock to prevent race conditions
+
       // Create audio context if needed
       if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
@@ -478,6 +333,8 @@
       
     } catch (error) {
       console.error(`[VTF Inject] Error setting up capture for ${elementId}:`, error);
+    } finally {
+      pendingProcessors.delete(elementId); // Remove lock
     }
   }
   
@@ -501,6 +358,8 @@
         console.warn(`[VTF Inject] Error disconnecting ${elementId}:`, e);
       }
       activeProcessors.delete(elementId);
+      // Also remove from pending, in case it was being set up
+      pendingProcessors.delete(elementId);
     }
   }
   
@@ -526,24 +385,18 @@
         if (node.nodeName === 'AUDIO' && node.id && node.id.startsWith('msRemAudio-')) {
           console.log(`[VTF Inject] New audio element detected: ${node.id}`);
           
-          // Immediate attempt to capture
-          if (node.srcObject || node.src) {
-            captureAudioElement(node);
-          }
-          
-          // Also set up event listeners for delayed initialization
           const tryCapture = () => {
-            if (node.srcObject || node.src) {
-              captureAudioElement(node);
-            }
+            // The pendingProcessors lock in captureAudioElement will prevent duplicates
+            captureAudioElement(node);
           };
-          
-          // Multiple fallback attempts
-          setTimeout(tryCapture, 100);
-          setTimeout(tryCapture, 500);
-          
-          // Listen for play event  
-          node.addEventListener('play', tryCapture);
+
+          // Attempt to capture if srcObject is already available.
+          if (node.srcObject) {
+            tryCapture();
+          }
+
+          // The `play` event listener on `document` will handle most cases.
+          // We add a 'loadedmetadata' listener as a fallback for when the stream is attached later.
           node.addEventListener('loadedmetadata', tryCapture);
         }
       });

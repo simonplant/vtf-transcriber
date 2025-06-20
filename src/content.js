@@ -10,7 +10,32 @@
 
 console.log('VTF Audio Extension: Content script loaded at', new Date().toISOString());
 
-// Inject the page-context script
+// --- FIX: Use postMessage to avoid CSP violations ---
+// Listen for requests from the injected script for the Worklet URL
+window.addEventListener('message', (event) => {
+  // Basic validation to ensure the message is from our injected script
+  if (event.source !== window || !event.data || event.data.type !== 'VTF_REQUEST_WORKLET_URL') {
+    return;
+  }
+
+  try {
+    console.log('[Content] Received worklet URL request from inject.js');
+    const workletURL = chrome.runtime.getURL('vtf-audio-processor.js');
+    
+    // Send the URL back to the injected script in a response message
+    window.postMessage({
+      type: 'VTF_WORKLET_URL_RESPONSE',
+      url: workletURL
+    }, window.location.origin);
+
+  } catch (error) {
+    // This could happen if the extension context is invalidated during the process
+    console.error('[Content] Error getting or sending worklet URL:', error);
+  }
+});
+// --- END FIX ---
+
+// Inject the main page-context script
 const script = document.createElement('script');
 script.src = chrome.runtime.getURL('inject.js');
 script.onload = function() {
