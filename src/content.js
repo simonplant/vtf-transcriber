@@ -49,6 +49,14 @@ function handleAudioData(data) {
       return; // Validation failed, don't proceed
     }
 
+    // Debug logging for audio data flow
+    const maxAmplitude = Math.max(...data.audioData.map(Math.abs));
+    if (maxAmplitude < 0.001) {
+      console.log(`[DEBUG] Silent audio data received for ${data.streamId}`);
+    }
+    
+    console.log(`[DEBUG] Forwarding audio data: ${data.streamId}, amplitude: ${maxAmplitude.toFixed(6)}, chunks: ${chunksSent++}`);
+
     // Send audio data to background script
     chrome.runtime.sendMessage({
       type: 'audioData',

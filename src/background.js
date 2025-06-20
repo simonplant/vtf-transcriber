@@ -236,6 +236,16 @@ function handleMessage(message, sender, sendResponse) {
             sendResponse({ status: 'ok' });
             return false;
 
+        case 'debugSilenceDetection':
+            // Debug command to test silence detection
+            if (conversationProcessor) {
+                conversationProcessor.debugSilenceDetection();
+                sendResponse({ status: 'debug_complete' });
+            } else {
+                sendResponse({ status: 'no_processor' });
+            }
+            return false;
+
         default:
             console.warn(`[Background] Unknown message type: ${message.type}`);
             sendResponse({ status: 'unknown_message_type' });
@@ -481,6 +491,14 @@ function notifySuccess(message) {
 // Retry-enabled message handlers
 async function handleAudioDataWithRetry(message, sendResponse) {
     try {
+        // Debug logging for audio data processing
+        const maxAmplitude = Math.max(...message.audioData.map(Math.abs));
+        if (maxAmplitude < 0.001) {
+            console.log(`[DEBUG] Silent audio data received in background for ${message.streamId}`);
+        }
+        
+        console.log(`[DEBUG] Processing audio data: ${message.streamId}, amplitude: ${maxAmplitude.toFixed(6)}, timestamp: ${message.timestamp}`);
+        
         await handleOperationWithRetry(async () => {
             if (!state.apiKey) {
                 throw new Error('No API key available for audio processing');

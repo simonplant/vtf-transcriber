@@ -18,6 +18,44 @@
 - [ ] **Verify AudioContext state** is 'closed'
 - [ ] **Expected**: No resource leaks, proper cleanup logs
 
+### ✅ Silence Detection Improvements
+
+#### Test 3: Silence Detection Debug Logging
+- [ ] **Open browser console** on VTF page
+- [ ] **Start audio capture** with active speakers
+- [ ] **Look for debug messages**:
+  - `[DEBUG] Silent audio chunk detected`
+  - `[DEBUG] Silent audio received for [streamId]`
+  - `[DEBUG] Processing [streamId] after [X]ms silence`
+- [ ] **Expected**: Debug messages appear during silence periods
+
+#### Test 4: Reduced Timeout Processing
+- [ ] **Start capture** with active speakers
+- [ ] **Stop talking** for 1.5 seconds
+- [ ] **Check console** for processing messages
+- [ ] **Verify segments are processed** after 1.5s silence
+- [ ] **Expected**: Faster processing of audio segments
+
+#### Test 5: Force Processing After Long Silence
+- [ ] **Start capture** with active speakers
+- [ ] **Stop talking** for 10+ seconds
+- [ ] **Check console** for force processing messages
+- [ ] **Verify segments are processed** even after long silence
+- [ ] **Expected**: Audio segments processed after 10s regardless of silence
+
+#### Test 6: Silent Audio Filtering
+- [ ] **Start capture** with silent audio streams
+- [ ] **Check console** for silent audio detection
+- [ ] **Verify silent segments are skipped** (not sent to API)
+- [ ] **Expected**: No API calls for silent audio, cost savings
+
+#### Test 7: Debug Command Testing
+- [ ] **Open browser console** on VTF page
+- [ ] **Run debug command**: `chrome.runtime.sendMessage({type: 'debugSilenceDetection'})`
+- [ ] **Check console output** for silence detection status
+- [ ] **Verify speaker buffer information** is displayed
+- [ ] **Expected**: Detailed status of all active speakers and their silence durations
+
 ### ✅ Performance Optimizations
 
 #### Test 3: Array Operations Efficiency

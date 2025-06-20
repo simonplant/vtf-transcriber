@@ -100,8 +100,9 @@ export class ConversationProcessor {
             this.setState(initialState);
         }
 
-        this.SPEAKER_TIMEOUT_MS = 3000; // End of speech delay (reduced from 3000ms)
-        this.MAX_SEGMENT_DURATION_S = 30; // Max audio length to send to API (reduced from 30s)
+        this.SPEAKER_TIMEOUT_MS = 1500; // Reduced from 3000ms for faster processing
+        this.MAX_SEGMENT_DURATION_S = 20; // Reduced from 30s for more frequent processing
+        this.MAX_SILENCE_BEFORE_FORCE = 10000; // Force process after 10s of silence
         this.cleanupInterval = setInterval(() => this.finalizeCompletedStreams(), this.SPEAKER_TIMEOUT_MS);
     }
 
@@ -137,7 +138,14 @@ export class ConversationProcessor {
         buffer.duration += audioData.length / 16000; // 16kHz sample rate
         buffer.lastActivity = Date.now();
 
+        // Debug logging for audio processing
+        const maxAmplitude = Math.max(...audioData.map(Math.abs));
+        if (maxAmplitude < 0.001) {
+            console.log(`[DEBUG] Silent audio received for ${streamId}, buffer duration: ${buffer.duration.toFixed(1)}s`);
+        }
+
         if (buffer.duration >= this.MAX_SEGMENT_DURATION_S) {
+            console.log(`[DEBUG] Max segment duration reached for ${streamId}, processing segment`);
             await this.transcribeAndProcessSegment(streamId);
         }
     }
@@ -152,8 +160,17 @@ export class ConversationProcessor {
     async finalizeCompletedStreams() {
         const now = Date.now();
         for (const [streamId, buffer] of this.speakerBuffers.entries()) {
-            if (now - buffer.lastActivity > this.SPEAKER_TIMEOUT_MS && buffer.audioChunks.length > 0) {
-                console.log(`Stream ${streamId} timed out. Processing segment.`);
+            const silenceDuration = now - buffer.lastActivity;
+            
+            if (buffer.audioChunks.length > 0 && 
+                (silenceDuration > this.SPEAKER_TIMEOUT_MS || 
+                 silenceDuration > this.MAX_SILENCE_BEFORE_FORCE)) {
+                
+                // Enhanced debug logging for silence processing
+                console.log(`[DEBUG] Processing ${streamId} after ${silenceDuration}ms silence`);
+                console.log(`[DEBUG] Buffer has ${buffer.audioChunks.length} chunks, duration: ${buffer.duration}s`);
+                console.log(`[Conversation] Processing after ${silenceDuration}ms silence`);
+                
                 await this.transcribeAndProcessSegment(streamId);
             }
         }
@@ -176,8 +193,21 @@ export class ConversationProcessor {
         }
 
         console.log(`[Conversation] Processing segment for stream ${streamId} with ${buffer.audioChunks.length} chunks`);
+        console.log(`[DEBUG] Segment duration: ${buffer.duration.toFixed(1)}s, total audio length: ${buffer.audioChunks.reduce((sum, chunk) => sum + chunk.length, 0)} samples`);
+        
         const concatenatedAudio = this.concatenateAudioChunks(buffer.audioChunks);
         const segmentDuration = concatenatedAudio.length / 16000;
+        
+        // Debug: Check if concatenated audio is silent
+        const maxAmplitude = Math.max(...concatenatedAudio.map(Math.abs));
+        if (maxAmplitude < 0.001) {
+            console.log(`[DEBUG] Silent segment detected for ${streamId}, skipping transcription`);
+            // Reset buffer but don't send to API
+            buffer.audioChunks = [];
+            buffer.duration = 0;
+            buffer.startTime = Date.now();
+            return;
+        }
         
         // Reset buffer before the async API call
         const segmentStartTime = buffer.startTime;
@@ -279,6 +309,20 @@ export class ConversationProcessor {
         if (this.cleanupInterval) {
             clearInterval(this.cleanupInterval);
             this.cleanupInterval = null;
+        }
+    }
+    
+    // Debug method to monitor silence detection
+    debugSilenceDetection() {
+        console.log('[DEBUG] Silence Detection Status:');
+        console.log(`- Speaker timeout: ${this.SPEAKER_TIMEOUT_MS}ms`);
+        console.log(`- Max segment duration: ${this.MAX_SEGMENT_DURATION_S}s`);
+        console.log(`- Max silence before force: ${this.MAX_SILENCE_BEFORE_FORCE}ms`);
+        console.log(`- Active speakers: ${this.speakerBuffers.size}`);
+        
+        for (const [streamId, buffer] of this.speakerBuffers.entries()) {
+            const silenceDuration = Date.now() - buffer.lastActivity;
+            console.log(`- ${streamId}: ${buffer.audioChunks.length} chunks, ${buffer.duration.toFixed(1)}s duration, ${silenceDuration}ms silence`);
         }
     }
 } 

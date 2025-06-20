@@ -255,6 +255,12 @@
         if (event.data.type === 'audioData') {
           const { audioData, timestamp, vadResult } = event.data;
             
+          // Debug: Check if audio is actually silent
+          const maxAmplitude = Math.max(...audioData.map(Math.abs));
+          if (maxAmplitude < 0.001) {
+            console.log('[DEBUG] Silent audio chunk detected');
+          }
+            
           // Assess audio quality before sending
           const qualityMetrics = assessAudioQuality(audioData);
 
