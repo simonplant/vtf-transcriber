@@ -273,4 +273,12 @@ export class ConversationProcessor {
         const minutesProcessed = this.totalProcessedDuration / 60;
         return minutesProcessed * costPerMinute;
     }
+
+    // Add cleanup method to prevent memory leaks
+    destroy() {
+        if (this.cleanupInterval) {
+            clearInterval(this.cleanupInterval);
+            this.cleanupInterval = null;
+        }
+    }
 } 

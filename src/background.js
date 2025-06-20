@@ -1,8 +1,8 @@
 /**
  * @file background.js
  * @path src/background.js
- * @description Service worker orchestrating audio processing, API calls, and state management.
- * @modified 2024-07-27
+ * @description Service worker for VTF Audio Transcriber with optimized lifecycle management
+ * @modified 2025-06-20
  * @requires storage.js
  * @requires conversation.js
  */
@@ -10,13 +10,75 @@
 import * as storage from './storage.js';
 import { ConversationProcessor } from './conversation.js';
 
-// --- Global State ---
+// Service worker optimization - Enhanced state management
 let state = {
-    isCapturing: false,
     apiKey: null,
+    isCapturing: false,
+    lastActivity: null,
+    reconnectAttempts: 0,
+    maxReconnectAttempts: 3
 };
 
-let conversationProcessor;
+let conversationProcessor = null;
+let keepAliveTimer = null;
+let healthCheckInterval = null;
+
+// Service worker lifecycle optimization
+const KEEP_ALIVE_INTERVAL = 25000; // 25 seconds (Chrome limit is 30s)
+const HEALTH_CHECK_INTERVAL = 60000; // 1 minute
+const MAX_IDLE_TIME = 300000; // 5 minutes
+
+// Keep service worker alive during active sessions
+function startKeepAlive() {
+    if (keepAliveTimer) return;
+    
+    keepAliveTimer = setInterval(() => {
+        // Ping to keep service worker alive during transcription
+        if (state.isCapturing) {
+            console.log('[Background] Service worker keep-alive ping');
+            chrome.runtime.getPlatformInfo().then(() => {
+                // This API call keeps the service worker active
+            }).catch(() => {});
+        }
+    }, KEEP_ALIVE_INTERVAL);
+}
+
+function stopKeepAlive() {
+    if (keepAliveTimer) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+    }
+}
+
+// Health check system for automatic recovery
+function startHealthCheck() {
+    if (healthCheckInterval) return;
+    
+    healthCheckInterval = setInterval(async () => {
+        try {
+            // Check if conversation processor is healthy
+            if (conversationProcessor && state.isCapturing) {
+                const now = Date.now();
+                if (state.lastActivity && (now - state.lastActivity) > MAX_IDLE_TIME) {
+                    console.log('[Background] No activity detected, checking system health');
+                    await attemptSystemRecovery();
+                }
+            }
+        } catch (error) {
+            console.error('[Background] Health check failed:', error);
+            await attemptSystemRecovery();
+        }
+    }, HEALTH_CHECK_INTERVAL);
+}
+
+function stopHealthCheck() {
+    if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+    }
+}
+
+// --- Global State ---
 
 // --- Service Worker Lifecycle ---
 
@@ -234,18 +296,26 @@ async function startCapture(apiKey) {
 }
 
 async function stopCapture() {
-    if (!state.isCapturing) return;
+    console.log('[Background] Stopping capture');
     
-    console.log('Stopping capture session...');
-    state.isCapturing = false;
-    
+    // Properly cleanup conversation processor to prevent memory leaks
     if (conversationProcessor) {
-        await conversationProcessor.finalizeAllStreams();
-        await storage.setConversationProcessorState(conversationProcessor.getState());
+        conversationProcessor.destroy(); // Call the cleanup method we added
         conversationProcessor = null;
     }
     
-    await storage.setCapturingState(false);
+    state.isCapturing = false;
+    await updateState({ isCapturing: false });
+    
+    // Send stop message to all tabs
+    const tabs = await chrome.tabs.query({ url: "*://vtf.t3live.com/*" });
+    for (const tab of tabs) {
+        try {
+            await chrome.tabs.sendMessage(tab.id, { type: 'stop_capture' });
+        } catch (error) {
+            console.warn(`[Background] Could not send stop message to tab ${tab.id}:`, error);
+        }
+    }
 }
 
 async function clearAllData() {

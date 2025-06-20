@@ -14,29 +14,47 @@ const WHISPER_API_URL = 'https://api.openai.com/v1/audio/transcriptions';
 const MAX_CONCURRENT_REQUESTS = 3;
 let activeRequests = 0;
 const requestQueue = [];
+let isProcessing = false;
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 100; // Minimum 100ms between requests
+const MAX_FILE_SIZE_MB = 24; // OpenAI limit is 25MB, use 24MB for safety
+const MAX_AUDIO_DURATION_S = 600; // 10 minutes max
 
 async function processQueue() {
-    if (activeRequests >= MAX_CONCURRENT_REQUESTS || requestQueue.length === 0) {
-        return;
+    if (isProcessing || requestQueue.length === 0) return;
+    
+    isProcessing = true;
+    
+    while (requestQueue.length > 0) {
+        const { requestFunction, resolve, reject } = requestQueue.shift();
+        
+        try {
+            // Implement intelligent throttling
+            const now = Date.now();
+            const timeSinceLastRequest = now - lastRequestTime;
+            
+            if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+                await new Promise(resolve => setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+            }
+            
+            const result = await requestFunction();
+            lastRequestTime = Date.now();
+            resolve(result);
+            
+            // Brief pause between requests to avoid overwhelming API
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+        } catch (error) {
+            reject(error);
+        }
     }
-
-    activeRequests++;
-    const { requestFunction, resolve, reject } = requestQueue.shift();
-
-    try {
-        const result = await requestFunction();
-        resolve(result);
-    } catch (error) {
-        reject(error);
-    } finally {
-        activeRequests--;
-        processQueue();
-    }
+    
+    isProcessing = false;
 }
 
 function queueRequest(requestFunction) {
     return new Promise((resolve, reject) => {
-        requestQueue.push({ requestFunction, resolve, reject });
+        requestQueue.push({ requestFunction, resolve, reject, timestamp: Date.now() });
         processQueue();
     });
 }
@@ -123,34 +141,42 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
  */
 export async function processAudioChunk(audioData, streamId, apiKey) {
     if (!apiKey) {
-        console.error('API key not provided. Please set it in the options.');
-        // Notify popup of error
-        chrome.runtime.sendMessage({ type: 'error', message: 'API key not found.' });
+        console.error('[API] No API key provided');
         return null;
     }
 
-    // Enhanced audio validation
-    if (!audioData || audioData.length < 1600) { // at least 0.1s of audio
-        console.warn(`Skipping empty or very short audio chunk for stream ${streamId}.`);
+    if (!audioData || audioData.length === 0) {
+        console.warn('[API] Empty audio data provided');
         return null;
     }
 
-    // Check if audio has any meaningful content (not just silence)
-    const audioLevel = Math.sqrt(audioData.reduce((sum, sample) => sum + sample * sample, 0) / audioData.length);
-    if (audioLevel < 0.01) { // Very low audio level threshold
-        console.warn(`Skipping very quiet audio chunk for stream ${streamId} (level: ${audioLevel.toFixed(4)})`);
+    console.log(`[API] Processing audio chunk for stream ${streamId}, length: ${audioData.length}`);
+
+    // Validate audio duration and size BEFORE processing
+    const durationInSeconds = audioData.length / 16000; // Assuming 16kHz sample rate
+    if (durationInSeconds > MAX_AUDIO_DURATION_S) {
+        console.error(`[API] Audio duration ${durationInSeconds}s exceeds maximum ${MAX_AUDIO_DURATION_S}s`);
         return null;
     }
 
-    console.log(`[API] Processing audio for stream ${streamId}: ${audioData.length} samples, level: ${audioLevel.toFixed(4)}`);
+    // Convert to WAV format
+    const wavBuffer = convertToWav(audioData, 16000);
+    const fileSizeMB = wavBuffer.byteLength / (1024 * 1024);
+    
+    // Validate file size BEFORE sending to API
+    if (fileSizeMB > MAX_FILE_SIZE_MB) {
+        console.error(`[API] File size ${fileSizeMB.toFixed(2)}MB exceeds maximum ${MAX_FILE_SIZE_MB}MB`);
+        return null;
+    }
+    
+    console.log(`[API] File size: ${fileSizeMB.toFixed(2)}MB, duration: ${durationInSeconds.toFixed(1)}s`);
 
-    const wavBuffer = float32ToWav(audioData);
     const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
     const formData = new FormData();
-    formData.append('file', audioBlob, 'audio.wav');
+    formData.append('file', audioBlob, `${streamId}-${Date.now()}.wav`);
     formData.append('model', 'whisper-1');
-    formData.append('response_format', 'verbose_json');
     formData.append('language', 'en');
+    formData.append('response_format', 'verbose_json');
 
     const apiCall = async () => {
         const response = await fetch(WHISPER_API_URL, {

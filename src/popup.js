@@ -234,16 +234,28 @@ document.addEventListener('DOMContentLoaded', () => {
             // Update transcript content
             transcriptContent.textContent = `"${latest.text}"`;
             
-            // Update metadata
+            // Update metadata - FIXED: Use safe DOM manipulation instead of innerHTML
             const time = new Date(latest.timestamp).toLocaleTimeString();
             const confidence = latest.confidence ? 
                 (latest.confidence > 0.8 ? 'High' : 'Medium') + ' confidence' : '';
             
-            transcriptMeta.innerHTML = `
-                <span class="speaker-tag">${latest.speaker || 'Speaker 1'}</span>
-                <span>${time}</span>
-                ${confidence ? `<span>${confidence}</span>` : ''}
-            `;
+            // Clear and rebuild safely
+            transcriptMeta.innerHTML = '';
+            
+            const speakerSpan = document.createElement('span');
+            speakerSpan.className = 'speaker-tag';
+            speakerSpan.textContent = latest.speaker || 'Speaker 1';
+            transcriptMeta.appendChild(speakerSpan);
+            
+            const timeSpan = document.createElement('span');
+            timeSpan.textContent = time;
+            transcriptMeta.appendChild(timeSpan);
+            
+            if (confidence) {
+                const confidenceSpan = document.createElement('span');
+                confidenceSpan.textContent = confidence;
+                transcriptMeta.appendChild(confidenceSpan);
+            }
             
             // Flash the transcript section
             flashElement(transcriptContent.parentElement);

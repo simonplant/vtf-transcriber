@@ -158,24 +158,36 @@ function showReloadNotification() {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   `;
   
-  notification.innerHTML = `
-    <div style="margin-bottom: 15px;">
-      <strong>VTF Extension Updated</strong>
-    </div>
-    <div style="margin-bottom: 15px; font-size: 14px;">
-      The extension was reloaded. Please refresh the page to reconnect.
-    </div>
-    <button onclick="location.reload()" style="
-      background: white;
-      color: #e74c3c;
-      border: none;
-      padding: 8px 20px;
-      border-radius: 4px;
-      font-size: 14px;
-      cursor: pointer;
-      font-weight: 500;
-    ">Refresh Page</button>
+  // Create elements safely without inline handlers
+  const title = document.createElement('div');
+  title.style.marginBottom = '15px';
+  title.innerHTML = '<strong>VTF Extension Updated</strong>';
+  
+  const message = document.createElement('div');
+  message.style.cssText = 'margin-bottom: 15px; font-size: 14px;';
+  message.textContent = 'The extension was reloaded. Please refresh the page to reconnect.';
+  
+  const button = document.createElement('button');
+  button.style.cssText = `
+    background: white;
+    color: #e74c3c;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 500;
   `;
+  button.textContent = 'Refresh Page';
+  
+  // Add event listener instead of inline handler - CSP COMPLIANT
+  button.addEventListener('click', () => {
+    location.reload();
+  });
+  
+  notification.appendChild(title);
+  notification.appendChild(message);
+  notification.appendChild(button);
   
   document.body.appendChild(notification);
 }
@@ -507,20 +519,51 @@ function displayProcessedSegment(segment) {
   // Format time safely
   const timeString = isNaN(startTime.getTime()) ? 'Unknown Time' : startTime.toLocaleTimeString();
   
-  segmentElement.innerHTML = `
-    <div class="vtf-segment-header">
-      <div class="vtf-speaker-info">
-        <span class="vtf-speaker-name">${segment.speaker || 'Unknown Speaker'}</span>
-        <span class="vtf-topic-badge">Trading</span>
-      </div>
-      <div class="vtf-segment-meta">
-        <span>${timeString}</span>
-        ${duration ? `<span>${duration}</span>` : ''}
-        <span class="${confidenceClass}">${confidenceText}</span>
-      </div>
-    </div>
-    <div class="vtf-segment-text">${segment.text}</div>
-  `;
+  // Create segment structure safely without innerHTML - FIXED XSS VULNERABILITY
+  const segmentHeader = document.createElement('div');
+  segmentHeader.className = 'vtf-segment-header';
+  
+  const speakerInfo = document.createElement('div');
+  speakerInfo.className = 'vtf-speaker-info';
+  
+  const speakerName = document.createElement('span');
+  speakerName.className = 'vtf-speaker-name';
+  speakerName.textContent = segment.speaker || 'Unknown Speaker'; // Safe text content
+  
+  const topicBadge = document.createElement('span');
+  topicBadge.className = 'vtf-topic-badge';
+  topicBadge.textContent = 'Trading';
+  
+  speakerInfo.appendChild(speakerName);
+  speakerInfo.appendChild(topicBadge);
+  
+  const segmentMeta = document.createElement('div');
+  segmentMeta.className = 'vtf-segment-meta';
+  
+  const timeSpan = document.createElement('span');
+  timeSpan.textContent = timeString;
+  segmentMeta.appendChild(timeSpan);
+  
+  if (duration) {
+    const durationSpan = document.createElement('span');
+    durationSpan.textContent = duration;
+    segmentMeta.appendChild(durationSpan);
+  }
+  
+  const confidenceSpan = document.createElement('span');
+  confidenceSpan.className = confidenceClass;
+  confidenceSpan.textContent = confidenceText;
+  segmentMeta.appendChild(confidenceSpan);
+  
+  segmentHeader.appendChild(speakerInfo);
+  segmentHeader.appendChild(segmentMeta);
+  
+  const segmentText = document.createElement('div');
+  segmentText.className = 'vtf-segment-text';
+  segmentText.textContent = segment.text; // Safe text content
+  
+  segmentElement.appendChild(segmentHeader);
+  segmentElement.appendChild(segmentText);
   
   content.insertBefore(segmentElement, content.firstChild);
   
@@ -696,29 +739,66 @@ function exportProcessedSegments() {
   showNotification(`Exported ${processedSegments.length} segments`, 'success');
 }
 
-// Show notification
+// Notification element pool for better performance
+const notificationPool = [];
+const MAX_POOL_SIZE = 3;
+
+// Show notification with element pooling - PERFORMANCE OPTIMIZED
 function showNotification(message, type = 'info') {
-  const notification = document.createElement('div');
-  notification.style.cssText = `
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    background: ${type === 'success' ? 'rgba(76, 175, 80, 0.9)' : 'rgba(33, 150, 243, 0.9)'};
-    color: white;
-    padding: 12px 20px;
-    border-radius: 6px;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    font-size: 14px;
-    z-index: 10001;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    animation: slideIn 0.3s ease;
-  `;
+  let notification = notificationPool.pop();
+  
+  if (!notification) {
+    // Create new notification element if pool is empty
+    notification = document.createElement('div');
+    notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      color: white;
+      padding: 12px 20px;
+      border-radius: 6px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 14px;
+      z-index: 10001;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      animation: slideIn 0.3s ease;
+      opacity: 0;
+      transform: translateX(20px);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    `;
+  }
+  
+  // Configure notification
+  notification.style.background = type === 'success' ? 'rgba(76, 175, 80, 0.9)' : 'rgba(33, 150, 243, 0.9)';
   notification.textContent = message;
+  notification.style.opacity = '0';
+  notification.style.transform = 'translateX(20px)';
+  
   document.body.appendChild(notification);
   
+  // Animate in
+  requestAnimationFrame(() => {
+    notification.style.opacity = '1';
+    notification.style.transform = 'translateX(0)';
+  });
+  
+  // Auto-remove and return to pool
   setTimeout(() => {
     if (notification.parentNode) {
-      notification.parentNode.removeChild(notification);
+      // Animate out
+      notification.style.opacity = '0';
+      notification.style.transform = 'translateX(20px)';
+      
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.parentNode.removeChild(notification);
+        }
+        
+        // Return to pool if not full
+        if (notificationPool.length < MAX_POOL_SIZE) {
+          notificationPool.push(notification);
+        }
+      }, 300);
     }
   }, 3000);
 }
@@ -786,19 +866,35 @@ function showRefreshNotification() {
     max-width: 300px;
   `;
   
-  notification.innerHTML = `
-    <div style="font-weight: 600; margin-bottom: 8px;">VTF Transcriber Extension</div>
-    <div style="margin-bottom: 12px;">Extension was reloaded. Please refresh this page to resume transcription.</div>
-    <button onclick="window.location.reload()" style="
-      background: rgba(255, 255, 255, 0.2);
-      border: 1px solid rgba(255, 255, 255, 0.3);
-      color: white;
-      padding: 6px 12px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 12px;
-    ">Refresh Page</button>
+  // Create elements safely without inline handlers
+  const title = document.createElement('div');
+  title.style.cssText = 'font-weight: 600; margin-bottom: 8px;';
+  title.textContent = 'VTF Transcriber Extension';
+  
+  const message = document.createElement('div');
+  message.style.marginBottom = '12px';
+  message.textContent = 'Extension was reloaded. Please refresh this page to resume transcription.';
+  
+  const button = document.createElement('button');
+  button.style.cssText = `
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
   `;
+  button.textContent = 'Refresh Page';
+  
+  // Add event listener instead of inline handler - CSP COMPLIANT
+  button.addEventListener('click', () => {
+    window.location.reload();
+  });
+  
+  notification.appendChild(title);
+  notification.appendChild(message);
+  notification.appendChild(button);
   
   document.body.appendChild(notification);
   

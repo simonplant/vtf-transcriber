@@ -40,7 +40,7 @@
   "web_accessible_resources": [
     {
       "resources": ["vtf-audio-processor.js", "inject.js"],
-      "matches": ["<all_urls>"]
+      "matches": ["*://vtf.t3live.com/*"]
     }
   ],
   
@@ -51,7 +51,7 @@
   },
   
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none';"
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';"
   },
   
   "minimum_chrome_version": "88"
